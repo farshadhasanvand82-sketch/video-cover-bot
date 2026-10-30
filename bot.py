@@ -24,13 +24,14 @@ threading.Thread(target=run_server, daemon=True).start()
 # تنظیمات اتصال به تلگرام
 API_ID = 2040
 API_HASH = "b18441a1ff607e10a989891a5462e627"
-BOT_TOKEN = "9002902968:AAG86OED4q23-9lMK7ZbOFbncSi5s7fdTz4"
+BOT_TOKEN = "9238834032:AAFl0JBdvFrDR2AFeoHH7TIFvOGw2jNCxM0"
 
 app = Client(
     "video_cover_bot",
     api_id=API_ID,
     api_hash=API_HASH,
-    bot_token=BOT_TOKEN
+    bot_token=BOT_TOKEN,
+    in_memory=True
 )
 
 @app.on_message(filters.video | filters.document)
