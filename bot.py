@@ -37,7 +37,6 @@ app = Client(
 
 ADMINS = {8886868325, 8250289921}
 
-# فایل‌های ذخیره‌سازی دائمی روی هاست برای جلوگیری از پاک شدن اطلاعات هنگام آپدیت
 USERS_FILE = "users_db.json"
 TRAFFIC_FILE = "user_traffic.json"
 SETTINGS_FILE = "settings.json"
@@ -48,7 +47,7 @@ def load_json(filename, default_val):
             with open(filename, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 if isinstance(default_val, dict):
-                    return {int(k) if k.isdigit() or (k.startswith('-') and k[1:].isdigit()) else k: v for k, v in data.items()}
+                    return {int(k) if str(k).lstrip('-').isdigit() else k: v for k, v in data.items()}
                 return data
         except Exception:
             return default_val
@@ -61,13 +60,12 @@ def save_json(filename, data):
     except Exception:
         pass
 
-# بارگیری اطلاعات از فایل‌های دائمی
+# بارگیری امن اطلاعات از فایل‌های دائمی
 users_db = load_json(USERS_FILE, {})
 user_traffic = load_json(TRAFFIC_FILE, {})
 settings = load_json(SETTINGS_FILE, {"forced_channel": None})
 user_data = {}
 
-# کیبورد دائمی پایین صفحه
 def get_reply_keyboard(user_id):
     keyboard = [
         [KeyboardButton("🎬 شروع پردازش (کاور + ویدیو)"), KeyboardButton("👤 حساب من")],
@@ -136,265 +134,269 @@ async def check_forced_sub(client, message):
 
 @app.on_message(filters.command("start"))
 async def start_handler(client: Client, message: Message):
-    user_id = message.from_user.id
-    
-    name = f"{message.from_user.first_name or ''} {message.from_user.last_name or ''}".strip()
-    username = f"@{message.from_user.username}" if message.from_user.username else "ندارد"
-    
-    users_db[user_id] = {"name": name if name else "بدون نام", "username": username}
-    save_json(USERS_FILE, users_db)
-    
-    if user_id not in user_traffic and user_id not in ADMINS:
-        user_traffic[user_id] = 500.0
-        save_json(TRAFFIC_FILE, user_traffic)
+    try:
+        user_id = message.from_user.id
+        name = f"{message.from_user.first_name or ''} {message.from_user.last_name or ''}".strip()
+        username = f"@{message.from_user.username}" if message.from_user.username else "ندارد"
+        
+        users_db[user_id] = {"name": name if name else "بدون نام", "username": username}
+        save_json(USERS_FILE, users_db)
+        
+        if user_id not in user_traffic and user_id not in ADMINS:
+            user_traffic[user_id] = 500.0
+            save_json(TRAFFIC_FILE, user_traffic)
 
-    user_data[user_id] = {"mode": "main_menu"}
-    
-    if not await check_forced_sub(client, message):
-        return
+        user_data[user_id] = {"mode": "main_menu"}
+        
+        if not await check_forced_sub(client, message):
+            return
 
-    remaining = "نامحدود (ادمین)" if user_id in ADMINS else f"{user_traffic.get(user_id, 0):.1f} مگابایت"
+        remaining = "نامحدود (ادمین)" if user_id in ADMINS else f"{user_traffic.get(user_id, 0):.1f} مگابایت"
 
-    await message.reply_text(
-        f"سلام! 👋 به ربات مدیریت ویدیو خوش آمدید.\n\n"
-        f"🎁 حجم هدیه تست شما: **{remaining}**",
-        reply_markup=get_reply_keyboard(user_id)
-    )
+        await message.reply_text(
+            f"سلام! 👋 به ربات مدیریت ویدیو خوش آمدید.\n\n"
+            f"🎁 حجم هدیه تست شما: **{remaining}**",
+            reply_markup=get_reply_keyboard(user_id)
+        )
+    except Exception as e:
+        print(f"Error in start: {e}")
 
 @app.on_callback_query()
 async def callback_handler(client: Client, callback_query: CallbackQuery):
-    data = callback_query.data
-    user_id = callback_query.from_user.id
-    message = callback_query.message
+    try:
+        data = callback_query.data
+        user_id = callback_query.from_user.id
+        message = callback_query.message
 
-    if data == "check_membership":
-        if await check_forced_sub(client, message):
-            await message.edit_text("✅ عضویت تایید شد!")
-        else:
-            await callback_query.answer("⚠️ هنوز عضو نشده‌اید!", show_alert=True)
-        return
-
-    if data == "cancel":
-        user_data[user_id] = {"mode": "main_menu"}
-        await message.edit_text("❌ عملیات لغو شد.")
-        return
-
-    # پنل ادمین شیشه‌ای
-    elif data == "admin_panel" and user_id in ADMINS:
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("📊 لیست کامل کاربران", callback_data="admin_user_list")],
-            [InlineKeyboardButton("📢 ارسال پیام همگانی", callback_data="admin_broadcast")],
-            [InlineKeyboardButton("🔒 تنظیم قفل کانال", callback_data="admin_set_channel")],
-            [InlineKeyboardButton("⭐ شارژ حجم کاربر", callback_data="admin_set_sub")],
-            [InlineKeyboardButton("🔙 بستن پنل", callback_data="cancel")]
-        ])
-        await message.edit_text("⚙️ **پنل مدیریت پیشرفته ادمین:**\n\nیک گزینه را انتخاب کنید:", reply_markup=keyboard)
-
-    elif data == "admin_user_list" and user_id in ADMINS:
-        if not users_db:
-            await callback_query.answer("هنوز کاربری ثبت نشده است.", show_alert=True)
-            return
-        
-        text = f"📊 **لیست کل کاربران ({len(users_db)} نفر):**\n\n"
-        for uid, info in users_db.items():
-            text += f"👤 نام: {info['name']}\n🆔 آیدی: `{uid}`\n🔗 یوزرنیم: {info['username']}\n-------------------\n"
-            
-        if len(text) > 4000:
-            text = text[:4000] + "\n\n... (لیست طولانی است)"
-            
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت به پنل", callback_data="admin_panel")]])
-        await message.edit_text(text, reply_markup=keyboard)
-
-    elif data == "admin_broadcast" and user_id in ADMINS:
-        user_data[user_id]["mode"] = "waiting_for_broadcast"
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 لغو", callback_data="admin_panel")]])
-        await message.edit_text("📢 لطفاً پیام یا رسانه‌ای که می‌خواهید به عنوان همگانی ارسال شود را بفرستید:", reply_markup=keyboard)
-
-    elif data == "admin_set_channel" and user_id in ADMINS:
-        user_data[user_id]["mode"] = "waiting_for_channel"
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 لغو", callback_data="admin_panel")]])
-        await message.edit_text("🔒 یوزرنیم کانال را با @ بفرستید (مثلا @mychannel):", reply_markup=keyboard)
-
-    elif data == "admin_set_sub" and user_id in ADMINS:
-        user_data[user_id]["mode"] = "waiting_for_sub_info"
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 لغو", callback_data="admin_panel")]])
-        await message.edit_text("⭐ فرمت شارژ حجم:\n`USER_ID MB`\nمثال:\n`123456789 1000`", reply_markup=keyboard)
-
-    elif data.startswith("quality_"):
-        if user_id not in user_data or user_data[user_id].get("mode") != "waiting_for_quality":
-            await callback_query.answer("⚠️ لطفاً مراحل را طی کنید.", show_alert=True)
+        if data == "check_membership":
+            if await check_forced_sub(client, message):
+                await message.edit_text("✅ عضویت تایید شد!")
+            else:
+                await callback_query.answer("⚠️ هنوز عضو نشده‌اید!", show_alert=True)
             return
 
-        await callback_query.answer()
-        status_msg = await message.reply_text("⚙️ در حال پردازش ویدیو با FFmpeg...")
-        
-        video_path = user_data[user_id].get("video_path")
-        photo_path = user_data[user_id].get("photo_path")
-        output_path = f"output_{user_id}.mp4"
+        if data == "cancel":
+            user_data[user_id] = {"mode": "main_menu"}
+            await message.edit_text("❌ عملیات لغو شد.")
+            return
 
-        scale_filter = ""
-        if data == "quality_360": scale_filter = "scale=-2:360"
-        elif data == "quality_480": scale_filter = "scale=-2:480"
-        elif data == "quality_720": scale_filter = "scale=-2:720"
-        elif data == "quality_1080": scale_filter = "scale=-2:1080"
-        else: scale_filter = "copy"
+        elif data == "admin_panel" and user_id in ADMINS:
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("📊 لیست کامل کاربران", callback_data="admin_user_list")],
+                [InlineKeyboardButton("📢 ارسال پیام همگانی", callback_data="admin_broadcast")],
+                [InlineKeyboardButton("🔒 تنظیم قفل کانال", callback_data="admin_set_channel")],
+                [InlineKeyboardButton("⭐ شارژ حجم کاربر", callback_data="admin_set_sub")],
+                [InlineKeyboardButton("🔙 بستن پنل", callback_data="cancel")]
+            ])
+            await message.edit_text("⚙️ **پنل مدیریت پیشرفته ادمین:**\n\nیک گزینه را انتخاب کنید:", reply_markup=keyboard)
 
-        if scale_filter == "copy":
-            cmd = f"ffmpeg -i '{video_path}' -i '{photo_path}' -map 0 -map 1 -c copy -disposition:v:1 attached_pic -movflags +faststart '{output_path}' -y"
-        else:
-            cmd = f"ffmpeg -i '{video_path}' -i '{photo_path}' -vf '{scale_filter}' -c:v libx264 -preset ultrafast -crf 28 -c:a copy -c:v:1 copy -disposition:v:1 attached_pic -movflags +faststart '{output_path}' -y"
+        elif data == "admin_user_list" and user_id in ADMINS:
+            if not users_db:
+                await callback_query.answer("هنوز کاربری ثبت نشده است.", show_alert=True)
+                return
+            
+            text = f"📊 **لیست کل کاربران ({len(users_db)} نفر):**\n\n"
+            for uid, info in users_db.items():
+                text += f"👤 نام: {info['name']}\n🆔 آیدی: `{uid}`\n🔗 یوزرنیم: {info['username']}\n-------------------\n"
+                
+            if len(text) > 4000:
+                text = text[:4000] + "\n\n... (لیست طولانی است)"
+                
+            keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت به پنل", callback_data="admin_panel")]])
+            await message.edit_text(text, reply_markup=keyboard)
 
-        process = await asyncio.create_subprocess_shell(cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-        await process.communicate()
+        elif data == "admin_broadcast" and user_id in ADMINS:
+            user_data[user_id]["mode"] = "waiting_for_broadcast"
+            keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 لغو", callback_data="admin_panel")]])
+            await message.edit_text("📢 لطفاً پیام یا رسانه‌ای که می‌خواهید به عنوان همگانی ارسال شود را بفرستید:", reply_markup=keyboard)
 
-        await status_msg.edit_text("📤 در حال آپلود ویدیوی نهایی...")
-        prog_func = create_progress_callback(status_msg, "📤 **در حال آپلود ویدیوی نهایی:**")
+        elif data == "admin_set_channel" and user_id in ADMINS:
+            user_data[user_id]["mode"] = "waiting_for_channel"
+            keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 لغو", callback_data="admin_panel")]])
+            await message.edit_text("🔒 یوزرنیم کانال را با @ بفرستید:", reply_markup=keyboard)
 
-        await client.send_video(
-            chat_id=user_id,
-            video=output_path,
-            thumb=photo_path,
-            caption="✅ ویدیو با موفقیت پردازش شد.",
-            progress=prog_func
-        )
+        elif data == "admin_set_sub" and user_id in ADMINS:
+            user_data[user_id]["mode"] = "waiting_for_sub_info"
+            keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 لغو", callback_data="admin_panel")]])
+            await message.edit_text("⭐ فرمت شارژ حجم:\n`USER_ID MB`\nمثال:\n`123456789 1000`", reply_markup=keyboard)
 
-        await status_msg.delete()
+        elif data.startswith("quality_"):
+            if user_id not in user_data or user_data[user_id].get("mode") != "waiting_for_quality":
+                await callback_query.answer("⚠️ لطفاً مراحل را طی کنید.", show_alert=True)
+                return
 
-        for p in [video_path, photo_path, output_path]:
-            if p and os.path.exists(p):
-                os.remove(p)
+            await callback_query.answer()
+            status_msg = await message.reply_text("⚙️ در حال پردازش ویدیو با FFmpeg...")
+            
+            video_path = user_data[user_id].get("video_path")
+            photo_path = user_data[user_id].get("photo_path")
+            output_path = f"output_{user_id}.mp4"
 
-        user_data[user_id] = {"mode": "main_menu"}
+            scale_filter = ""
+            if data == "quality_360": scale_filter = "scale=-2:360"
+            elif data == "quality_480": scale_filter = "scale=-2:480"
+            elif data == "quality_720": scale_filter = "scale=-2:720"
+            elif data == "quality_1080": scale_filter = "scale=-2:1080"
+            else: scale_filter = "copy"
+
+            # دستورات بهینه‌شده برای مدیریت رم و فایل‌های حجیم تا ۲ گیگابایت
+            if scale_filter == "copy":
+                cmd = f"ffmpeg -i '{video_path}' -i '{photo_path}' -map 0 -map 1 -c copy -disposition:v:1 attached_pic -movflags +faststart '{output_path}' -y"
+            else:
+                cmd = f"ffmpeg -i '{video_path}' -i '{photo_path}' -vf '{scale_filter}' -c:v libx264 -preset ultrafast -crf 30 -threads 1 -maxrate 1000k -bufsize 2000k -c:a copy -c:v:1 copy -disposition:v:1 attached_pic -movflags +faststart '{output_path}' -y"
+
+            process = await asyncio.create_subprocess_shell(cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            await process.communicate()
+
+            await status_msg.edit_text("📤 در حال آپلود ویدیوی نهایی...")
+            prog_func = create_progress_callback(status_msg, "📤 **در حال آپلود ویدیوی نهایی:**")
+
+            await client.send_video(
+                chat_id=user_id,
+                video=output_path,
+                thumb=photo_path,
+                caption="✅ ویدیو با موفقیت پردازش شد.",
+                progress=prog_func
+            )
+
+            await status_msg.delete()
+
+            for p in [video_path, photo_path, output_path]:
+                if p and os.path.exists(p):
+                    os.remove(p)
+
+            user_data[user_id] = {"mode": "main_menu"}
+    except Exception as e:
+        print(f"Error in callback: {e}")
 
 @app.on_message(filters.text | filters.video | filters.document | filters.photo)
 async def media_handler(client: Client, message: Message):
-    user_id = message.from_user.id
-    text = message.text
-    
-    name = f"{message.from_user.first_name or ''} {message.from_user.last_name or ''}".strip()
-    username = f"@{message.from_user.username}" if message.from_user.username else "ندارد"
-    
-    if user_id not in users_db:
-        users_db[user_id] = {"name": name if name else "بدون نام", "username": username}
-        save_json(USERS_FILE, users_db)
-
-    if user_id not in user_data:
-        user_data[user_id] = {"mode": "main_menu"}
-    
-    state = user_data[user_id].get("mode")
-
-    # مدیریت دکمه‌های پایین صفحه
-    if text == "🎬 شروع پردازش (کاور + ویدیو)":
-        if user_id not in ADMINS and user_traffic.get(user_id, 0) <= 0:
-            await message.reply_text("❌ حجم تست شما تمام شده است. خرید اشتراک: @izeucs")
-            return
-        user_data[user_id] = {"mode": "waiting_for_photo"}
-        await message.reply_text("🖼️ **مرحله اول:** لطفاً **عکس کاور** مورد نظرتان را ارسال کنید:")
-        return
-
-    elif text == "👤 حساب من":
-        remaining = "نامحدود (ادمین)" if user_id in ADMINS else f"{user_traffic.get(user_id, 0):.1f} مگابایت"
-        await message.reply_text(f"👤 حساب کاربری:\n🆔 شناسه: `{user_id}`\n📊 حجم باقی‌مانده: **{remaining}**")
-        return
-
-    elif text == "🛒 خرید اشتراک":
-        await message.reply_text("🛒 برای خرید اشتراک و افزایش حجم، به پشتیبانی پیام دهید:\n👉 @izeucs")
-        return
-
-    elif text == "ℹ️ راهنما":
-        await message.reply_text("ℹ️ این ربات برای قرار دادن کاور روی ویدیو و تغییر کیفیت طراحی شده است.")
-        return
-
-    elif text == "⚙️ پنل مدیریت ادمین" and user_id in ADMINS:
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("📊 لیست کامل کاربران", callback_data="admin_user_list")],
-            [InlineKeyboardButton("📢 ارسال پیام همگانی", callback_data="admin_broadcast")],
-            [InlineKeyboardButton("🔒 تنظیم قفل کانال", callback_data="admin_set_channel")],
-            [InlineKeyboardButton("⭐ شارژ حجم کاربر", callback_data="admin_set_sub")],
-            [InlineKeyboardButton("🔙 بستن پنل", callback_data="cancel")]
-        ])
-        await message.reply_text("⚙️ **پنل مدیریت پیشرفته ادمین:**", reply_markup=keyboard)
-        return
-
-    # مدیریت حالت‌های ادمین
-    if user_id in ADMINS:
-        if state == "waiting_for_broadcast":
-            count = 0
-            for uid in users_db:
-                try:
-                    await message.copy(chat_id=uid)
-                    count += 1
-                except Exception:
-                    pass
-            user_data[user_id]["mode"] = "main_menu"
-            await message.reply_text(f"✅ پیام همگانی به {count} کاربر ارسال شد.")
-            return
-
-        elif state == "waiting_for_channel":
-            settings["forced_channel"] = message.text.strip()
-            save_json(SETTINGS_FILE, settings)
-            user_data[user_id]["mode"] = "main_menu"
-            await message.reply_text(f"✅ قفل کانال روی {message.text.strip()} تنظیم شد.")
-            return
-
-        elif state == "waiting_for_sub_info":
-            try:
-                parts = message.text.strip().split()
-                target_user = int(parts[0])
-                added_mb = float(parts[1])
-                user_traffic[target_user] = user_traffic.get(target_user, 0) + added_mb
-                save_json(TRAFFIC_FILE, user_traffic)
-                user_data[user_id]["mode"] = "main_menu"
-                await message.reply_text(f"✅ مبلغ {added_mb} MB به کاربر `{target_user}` اضافه شد.")
-                await client.send_message(target_user, f"⭐ حساب شما شارژ شد: {added_mb} MB")
-            except Exception:
-                await message.reply_text("❌ فرمت اشتباه است. مثال: `123456789 1000`")
-            return
-
-    # ۱. دریافت کاور
-    if state == "waiting_for_photo" and message.photo:
-        status_msg = await message.reply_text("📥 در حال دریافت عکس کاور...")
-        photo_path = await client.download_media(message)
+    try:
+        user_id = message.from_user.id
+        text = message.text
         
-        user_data[user_id]["photo_path"] = photo_path
-        user_data[user_id]["mode"] = "waiting_for_video"
+        name = f"{message.from_user.first_name or ''} {message.from_user.last_name or ''}".strip()
+        username = f"@{message.from_user.username}" if message.from_user.username else "ندارد"
         
-        await status_msg.edit_text("✅ کاور دریافت شد!\n\n🎬 **مرحله دوم:** حالا **ویدیو** را بفرستید:")
-        return
+        if user_id not in users_db:
+            users_db[user_id] = {"name": name if name else "بدون نام", "username": username}
+            save_json(USERS_FILE, users_db)
 
-    # ۲. دریافت ویدیو
-    elif state == "waiting_for_video" and (message.video or message.document):
-        if not await check_forced_sub(client, message):
-            return
-            
-        media_size_mb = (message.video.file_size if message.video else message.document.file_size) / (1024 * 1024)
+        if user_id not in user_data:
+            user_data[user_id] = {"mode": "main_menu"}
         
-        if user_id not in ADMINS:
-            if user_traffic.get(user_id, 0) < media_size_mb:
-                await message.reply_text(f"❌ حجم ویدیو ({media_size_mb:.1f} MB) از اعتبار شما بیشتر است!\nخرید: @izeucs")
+        state = user_data[user_id].get("mode")
+
+        if text == "🎬 شروع پردازش (کاور + ویدیو)":
+            if user_id not in ADMINS and user_traffic.get(user_id, 0) <= 0:
+                await message.reply_text("❌ حجم تست شما تمام شده است. خرید اشتراک: @izeucs")
                 return
-            user_traffic[user_id] -= media_size_mb
-            save_json(TRAFFIC_FILE, user_traffic)
+            user_data[user_id] = {"mode": "waiting_for_photo"}
+            await message.reply_text("🖼️ **مرحله اول:** لطفاً **عکس کاور** مورد نظرتان را ارسال کنید:")
+            return
 
-        status_msg = await message.reply_text("📥 در حال دانلود ویدیو...")
-        prog_func = create_progress_callback(status_msg, "📥 **در حال دانلود ویدیو:**")
-        
-        video_path = await client.download_media(message, progress=prog_func)
-        
-        user_data[user_id]["video_path"] = video_path
-        user_data[user_id]["mode"] = "waiting_for_quality"
-        
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("360p", callback_data="quality_360"), InlineKeyboardButton("480p", callback_data="quality_480")],
-            [InlineKeyboardButton("720p", callback_data="quality_720"), InlineKeyboardButton("1080p", callback_data="quality_1080")],
-            [InlineKeyboardButton("⚙️ کیفیت اصلی", callback_data="quality_original")]
-        ])
-        
-        await status_msg.edit_text("✅ ویدیو دانلود شد!\n\n🎚️ **مرحله سوم:** کیفیت خروجی را انتخاب کنید:", reply_markup=keyboard)
-        return
+        elif text == "👤 حساب من":
+            remaining = "نامحدود (ادمین)" if user_id in ADMINS else f"{user_traffic.get(user_id, 0):.1f} مگابایت"
+            await message.reply_text(f"👤 حساب کاربری:\n🆔 شناسه: `{user_id}`\n📊 حجم باقی‌مانده: **{remaining}**")
+            return
 
-    elif state == "main_menu":
-        await message.reply_text("⚠️ لطفاً از دکمه‌های پایین صفحه استفاده کنید:", reply_markup=get_reply_keyboard(user_id))
+        elif text == "🛒 خرید اشتراک":
+            await message.reply_text("🛒 برای خرید اشتراک و افزایش حجم، به پشتیبانی پیام دهید:\n👉 @izeucs")
+            return
 
-print("Bot is running with persistent JSON storage for users and traffic...")
+        elif text == "ℹ️ راهنما":
+            await message.reply_text("ℹ️ این ربات برای قرار دادن کاور روی ویدیو و تغییر کیفیت طراحی شده است.")
+            return
+
+        elif text == "⚙️ پنل مدیریت ادمین" and user_id in ADMINS:
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("📊 لیست کامل کاربران", callback_data="admin_user_list")],
+                [InlineKeyboardButton("📢 ارسال پیام همگانی", callback_data="admin_broadcast")],
+                [InlineKeyboardButton("🔒 تنظیم قفل کانال", callback_data="admin_set_channel")],
+                [InlineKeyboardButton("⭐ شارژ حجم کاربر", callback_data="admin_set_sub")],
+                [InlineKeyboardButton("🔙 بستن پنل", callback_data="cancel")]
+            ])
+            await message.reply_text("⚙️ **پنل مدیریت پیشرفته ادمین:**", reply_markup=keyboard)
+            return
+
+        if user_id in ADMINS:
+            if state == "waiting_for_broadcast":
+                count = 0
+                for uid in users_db:
+                    try:
+                        await message.copy(chat_id=uid)
+                        count += 1
+                    except Exception:
+                        pass
+                user_data[user_id]["mode"] = "main_menu"
+                await message.reply_text(f"✅ پیام همگانی به {count} کاربر ارسال شد.")
+                return
+
+            elif state == "waiting_for_channel":
+                settings["forced_channel"] = message.text.strip()
+                save_json(SETTINGS_FILE, settings)
+                user_data[user_id]["mode"] = "main_menu"
+                await message.reply_text(f"✅ قفل کانال روی {message.text.strip()} تنظیم شد.")
+                return
+
+            elif state == "waiting_for_sub_info":
+                try:
+                    parts = message.text.strip().split()
+                    target_user = int(parts[0])
+                    added_mb = float(parts[1])
+                    user_traffic[target_user] = user_traffic.get(target_user, 0) + added_mb
+                    save_json(TRAFFIC_FILE, user_traffic)
+                    user_data[user_id]["mode"] = "main_menu"
+                    await message.reply_text(f"✅ مبلغ {added_mb} MB به کاربر `{target_user}` اضافه شد.")
+                    await client.send_message(target_user, f"⭐ حساب شما شارژ شد: {added_mb} MB")
+                except Exception:
+                    await message.reply_text("❌ فرمت اشتباه است. مثال: `123456789 1000`")
+                return
+
+        if state == "waiting_for_photo" and message.photo:
+            status_msg = await message.reply_text("📥 در حال دریافت عکس کاور...")
+            photo_path = await client.download_media(message)
+            
+            user_data[user_id]["photo_path"] = photo_path
+            user_data[user_id]["mode"] = "waiting_for_video"
+            
+            await status_msg.edit_text("✅ کاور دریافت شد!\n\n🎬 **مرحله دوم:** حالا **ویدیو** را بفرستید:")
+            return
+
+        elif state == "waiting_for_video" and (message.video or message.document):
+            if not await check_forced_sub(client, message):
+                return
+                
+            media_size_mb = (message.video.file_size if message.video else message.document.file_size) / (1024 * 1024)
+            
+            if user_id not in ADMINS:
+                if user_traffic.get(user_id, 0) < media_size_mb:
+                    await message.reply_text(f"❌ حجم ویدیو ({media_size_mb:.1f} MB) از اعتبار شما بیشتر است!\nخرید: @izeucs")
+                    return
+                user_traffic[user_id] -= media_size_mb
+                save_json(TRAFFIC_FILE, user_traffic)
+
+            status_msg = await message.reply_text("📥 در حال دانلود ویدیو...")
+            prog_func = create_progress_callback(status_msg, "📥 **در حال دانلود ویدیو:**")
+            
+            video_path = await client.download_media(message, progress=prog_func)
+            
+            user_data[user_id]["video_path"] = video_path
+            user_data[user_id]["mode"] = "waiting_for_quality"
+            
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("360p", callback_data="quality_360"), InlineKeyboardButton("480p", callback_data="quality_480")],
+                [InlineKeyboardButton("720p", callback_data="quality_720"), InlineKeyboardButton("1080p", callback_data="quality_1080")],
+                [InlineKeyboardButton("⚙️ کیفیت اصلی (پر سرعت)", callback_data="quality_original")]
+            ])
+            
+            await status_msg.edit_text("✅ ویدیو دانلود شد!\n\n🎚️ **مرحله سوم:** کیفیت خروجی را انتخاب کنید:", reply_markup=keyboard)
+            return
+
+        elif state == "main_menu":
+            await message.reply_text("⚠️ لطفاً از دکمه‌های پایین صفحه استفاده کنید:", reply_markup=get_reply_keyboard(user_id))
+    except Exception as e:
+        print(f"Error in media_handler: {e}")
+
+print("Bot is fully running with persistent storage and optimized FFmpeg...")
 app.run()
