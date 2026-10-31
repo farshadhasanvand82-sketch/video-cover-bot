@@ -36,19 +36,20 @@ app = Client(
 
 ADMINS = {8886868325, 8250289921}
 
-users_db = {}     # ذخیره مشخصات کاربران: {user_id: {"name": ..., "username": ...}}
+users_db = {}     # {user_id: {"name": ..., "username": ...}}
 user_traffic = {} # حجم کاربران
 settings = {"forced_channel": None}
 user_data = {}
 
 # کیبورد دائمی پایین صفحه
-main_reply_keyboard = ReplyKeyboardMarkup(
-    [
+def get_reply_keyboard(user_id):
+    keyboard = [
         [KeyboardButton("🎬 شروع پردازش (کاور + ویدیو)"), KeyboardButton("👤 حساب من")],
         [KeyboardButton("🛒 خرید اشتراک"), KeyboardButton("ℹ️ راهنما")]
-    ],
-    resize_keyboard=True
-)
+    ]
+    if user_id in ADMINS:
+        keyboard.append([KeyboardButton("⚙️ پنل مدیریت ادمین")])
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 def create_progress_callback(message, text):
     start_time = time.time()
@@ -111,10 +112,8 @@ async def check_forced_sub(client, message):
 async def start_handler(client: Client, message: Message):
     user_id = message.from_user.id
     
-    # ثبت نام، اسم و یوزرنیم کاربر
     name = f"{message.from_user.first_name or ''} {message.from_user.last_name or ''}".strip()
     username = f"@{message.from_user.username}" if message.from_user.username else "ندارد"
-    
     users_db[user_id] = {"name": name if name else "بدون نام", "username": username}
     
     if user_id not in user_traffic and user_id not in ADMINS:
@@ -129,9 +128,8 @@ async def start_handler(client: Client, message: Message):
 
     await message.reply_text(
         f"سلام! 👋 به ربات مدیریت ویدیو خوش آمدید.\n\n"
-        f"🎁 حجم هدیه تست شما: **{remaining}**\n\n"
-        "از دکمه‌های پایین صفحه استفاده کنید:",
-        reply_markup=main_reply_keyboard
+        f"🎁 حجم هدیه تست شما: **{remaining}**",
+        reply_markup=get_reply_keyboard(user_id)
     )
 
 @app.on_callback_query()
@@ -142,27 +140,26 @@ async def callback_handler(client: Client, callback_query: CallbackQuery):
 
     if data == "check_membership":
         if await check_forced_sub(client, message):
-            await message.edit_text("✅ عضویت تایید شد! دکمه شروع را بزنید.")
+            await message.edit_text("✅ عضویت تایید شد!")
         else:
             await callback_query.answer("⚠️ هنوز عضو نشده‌اید!", show_alert=True)
         return
 
-    if data == "start_process" or data == "cancel":
-        if user_id not in ADMINS and user_traffic.get(user_id, 0) <= 0:
-            await message.reply_text("❌ حجم تست شما تمام شده است. خرید اشتراک: @izeucs")
-            return
+    if data == "cancel":
+        user_data[user_id] = {"mode": "main_menu"}
+        await message.edit_text("❌ عملیات لغو شد.")
+        return
 
-        user_data[user_id] = {"mode": "waiting_for_photo"}
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("❌ لغو", callback_data="cancel")]])
-        await message.reply_text("🖼️ **مرحله اول:** لطفاً **عکس کاور** مورد نظرتان را ارسال کنید:", reply_markup=keyboard)
-
+    # پنل ادمین شیشه‌ای
     elif data == "admin_panel" and user_id in ADMINS:
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("📊 آمار و لیست کاربران", callback_data="admin_user_list")],
+            [InlineKeyboardButton("📊 لیست کامل کاربران", callback_data="admin_user_list")],
+            [InlineKeyboardButton("📢 ارسال پیام همگانی", callback_data="admin_broadcast")],
+            [InlineKeyboardButton("🔒 تنظیم قفل کانال", callback_data="admin_set_channel")],
             [InlineKeyboardButton("⭐ شارژ حجم کاربر", callback_data="admin_set_sub")],
             [InlineKeyboardButton("🔙 بستن پنل", callback_data="cancel")]
         ])
-        await message.edit_text("⚙️ **پنل مدیریت ادمین:**", reply_markup=keyboard)
+        await message.edit_text("⚙️ **پنل مدیریت پیشرفته ادمین:**\n\nیک گزینه را انتخاب کنید:", reply_markup=keyboard)
 
     elif data == "admin_user_list" and user_id in ADMINS:
         if not users_db:
@@ -171,14 +168,23 @@ async def callback_handler(client: Client, callback_query: CallbackQuery):
         
         text = f"📊 **لیست کل کاربران ({len(users_db)} نفر):**\n\n"
         for uid, info in users_db.items():
-            text += f"👤 نام: {info['name']}\n🆔 آیدی عددی: `{uid}`\n🔗 یوزرنیم: {info['username']}\n-------------------\n"
+            text += f"👤 نام: {info['name']}\n🆔 آیدی: `{uid}`\n🔗 یوزرنیم: {info['username']}\n-------------------\n"
             
-        # اگر لیست خیلی بلند بود، به بخش‌های کوچک‌تر تقسیم می‌کنیم یا ارسال می‌کنیم
         if len(text) > 4000:
             text = text[:4000] + "\n\n... (لیست طولانی است)"
             
         keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت به پنل", callback_data="admin_panel")]])
         await message.edit_text(text, reply_markup=keyboard)
+
+    elif data == "admin_broadcast" and user_id in ADMINS:
+        user_data[user_id]["mode"] = "waiting_for_broadcast"
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 لغو", callback_data="admin_panel")]])
+        await message.edit_text("📢 لطفاً پیام یا رسانه‌ای که می‌خواهید به عنوان همگانی ارسال شود را بفرستید:", reply_markup=keyboard)
+
+    elif data == "admin_set_channel" and user_id in ADMINS:
+        user_data[user_id]["mode"] = "waiting_for_channel"
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 لغو", callback_data="admin_panel")]])
+        await message.edit_text("🔒 یوزرنیم کانال را با @ بفرستید (مثلا @mychannel):", reply_markup=keyboard)
 
     elif data == "admin_set_sub" and user_id in ADMINS:
         user_data[user_id]["mode"] = "waiting_for_sub_info"
@@ -236,7 +242,6 @@ async def media_handler(client: Client, message: Message):
     user_id = message.from_user.id
     text = message.text
     
-    # ثبت خودکار اطلاعات کاربر در صورت ارسال پیام
     name = f"{message.from_user.first_name or ''} {message.from_user.last_name or ''}".strip()
     username = f"@{message.from_user.username}" if message.from_user.username else "ندارد"
     if user_id not in users_db:
@@ -247,7 +252,7 @@ async def media_handler(client: Client, message: Message):
     
     state = user_data[user_id].get("mode")
 
-    # مدیریت کلیک روی دکمه‌های پایین صفحه (Reply Keyboard)
+    # مدیریت دکمه‌های کیبورد پایین صفحه
     if text == "🎬 شروع پردازش (کاور + ویدیو)":
         if user_id not in ADMINS and user_traffic.get(user_id, 0) <= 0:
             await message.reply_text("❌ حجم تست شما تمام شده است. خرید اشتراک: @izeucs")
@@ -266,32 +271,52 @@ async def media_handler(client: Client, message: Message):
         return
 
     elif text == "ℹ️ راهنما":
-        await message.reply_text("ℹ️ این ربات برای قرار دادن کاور روی ویدیو و تغییر کیفیت طراحی شده است. از دکمه‌ها استفاده کنید.")
+        await message.reply_text("ℹ️ این ربات برای قرار دادن کاور روی ویدیو و تغییر کیفیت طراحی شده است.")
         return
 
-    # دستور پنل ادمین
-    if user_id in ADMINS and text == "/admin":
+    elif text == "⚙️ پنل مدیریت ادمین" and user_id in ADMINS:
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("📊 آمار و لیست کاربران", callback_data="admin_user_list")],
+            [InlineKeyboardButton("📊 لیست کامل کاربران", callback_data="admin_user_list")],
+            [InlineKeyboardButton("📢 ارسال پیام همگانی", callback_data="admin_broadcast")],
+            [InlineKeyboardButton("🔒 تنظیم قفل کانال", callback_data="admin_set_channel")],
             [InlineKeyboardButton("⭐ شارژ حجم کاربر", callback_data="admin_set_sub")],
-            [InlineKeyboardButton("🔙 بستن", callback_data="cancel")]
+            [InlineKeyboardButton("🔙 بستن پنل", callback_data="cancel")]
         ])
-        await message.reply_text("⚙️ **پنل مدیریت ادمین:**", reply_markup=keyboard)
+        await message.reply_text("⚙️ **پنل مدیریت پیشرفته ادمین:**", reply_markup=keyboard)
         return
 
-    # شارژ حجم توسط ادمین
-    if user_id in ADMINS and state == "waiting_for_sub_info":
-        try:
-            parts = text.strip().split()
-            target_user = int(parts[0])
-            added_mb = float(parts[1])
-            user_traffic[target_user] = user_traffic.get(target_user, 0) + added_mb
+    # مدیریت حالت‌های ادمین
+    if user_id in ADMINS:
+        if state == "waiting_for_broadcast":
+            count = 0
+            for uid in users_db:
+                try:
+                    await message.copy(chat_id=uid)
+                    count += 1
+                except Exception:
+                    pass
             user_data[user_id]["mode"] = "main_menu"
-            await message.reply_text(f"✅ مبلغ {added_mb} MB به کاربر `{target_user}` اضافه شد.")
-            await client.send_message(target_user, f"⭐ حساب شما شارژ شد: {added_mb} MB")
-        except Exception:
-            await message.reply_text("❌ فرمت اشتباه است. مثال: `123456789 1000`")
-        return
+            await message.reply_text(f"✅ پیام همگانی به {count} کاربر ارسال شد.")
+            return
+
+        elif state == "waiting_for_channel":
+            settings["forced_channel"] = message.text.strip()
+            user_data[user_id]["mode"] = "main_menu"
+            await message.reply_text(f"✅ قفل کانال روی {message.text.strip()} تنظیم شد.")
+            return
+
+        elif state == "waiting_for_sub_info":
+            try:
+                parts = message.text.strip().split()
+                target_user = int(parts[0])
+                added_mb = float(parts[1])
+                user_traffic[target_user] = user_traffic.get(target_user, 0) + added_mb
+                user_data[user_id]["mode"] = "main_menu"
+                await message.reply_text(f"✅ مبلغ {added_mb} MB به کاربر `{target_user}` اضافه شد.")
+                await client.send_message(target_user, f"⭐ حساب شما شارژ شد: {added_mb} MB")
+            except Exception:
+                await message.reply_text("❌ فرمت اشتباه است. مثال: `123456789 1000`")
+            return
 
     # ۱. دریافت کاور
     if state == "waiting_for_photo" and message.photo:
@@ -335,7 +360,7 @@ async def media_handler(client: Client, message: Message):
         return
 
     elif state == "main_menu":
-        await message.reply_text("⚠️ لطفاً از دکمه‌های پایین صفحه استفاده کنید:", reply_markup=main_reply_keyboard)
+        await message.reply_text("⚠️ لطفاً از دکمه‌های پایین صفحه استفاده کنید:", reply_markup=get_reply_keyboard(user_id))
 
-print("Bot is running with Admin User List feature...")
+print("Bot is running with full Admin Panel & User List...")
 app.run()
