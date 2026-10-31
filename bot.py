@@ -4,7 +4,7 @@ import time
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from hydrogram import Client, filters
-from hydrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from hydrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, ReplyKeyboardMarkup, KeyboardButton
 from hydrogram.errors import UserNotParticipant
 
 # --- راه‌اندازی سرور وب کوچک برای رندر ---
@@ -36,10 +36,19 @@ app = Client(
 
 ADMINS = {8886868325, 8250289921}
 
-users_db = set()
-user_traffic = {}
+users_db = {}     # ذخیره مشخصات کاربران: {user_id: {"name": ..., "username": ...}}
+user_traffic = {} # حجم کاربران
 settings = {"forced_channel": None}
 user_data = {}
+
+# کیبورد دائمی پایین صفحه
+main_reply_keyboard = ReplyKeyboardMarkup(
+    [
+        [KeyboardButton("🎬 شروع پردازش (کاور + ویدیو)"), KeyboardButton("👤 حساب من")],
+        [KeyboardButton("🛒 خرید اشتراک"), KeyboardButton("ℹ️ راهنما")]
+    ],
+    resize_keyboard=True
+)
 
 def create_progress_callback(message, text):
     start_time = time.time()
@@ -101,7 +110,12 @@ async def check_forced_sub(client, message):
 @app.on_message(filters.command("start"))
 async def start_handler(client: Client, message: Message):
     user_id = message.from_user.id
-    users_db.add(user_id)
+    
+    # ثبت نام، اسم و یوزرنیم کاربر
+    name = f"{message.from_user.first_name or ''} {message.from_user.last_name or ''}".strip()
+    username = f"@{message.from_user.username}" if message.from_user.username else "ندارد"
+    
+    users_db[user_id] = {"name": name if name else "بدون نام", "username": username}
     
     if user_id not in user_traffic and user_id not in ADMINS:
         user_traffic[user_id] = 500.0
@@ -113,20 +127,11 @@ async def start_handler(client: Client, message: Message):
 
     remaining = "نامحدود (ادمین)" if user_id in ADMINS else f"{user_traffic.get(user_id, 0):.1f} مگابایت"
 
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🎬 شروع پردازش (اول کاور، بعد ویدیو)", callback_data="start_process")],
-        [InlineKeyboardButton("👤 حساب کاربری و حجم من", callback_data="user_account")],
-        [InlineKeyboardButton("🛒 خرید اشتراک", url="https://t.me/izeucs")],
-        [InlineKeyboardButton("ℹ️ درباره ما", callback_data="about_bot")]
-    ])
-    
-    if user_id in ADMINS:
-        keyboard.inline_keyboard.append([InlineKeyboardButton("⚙️ پنل مدیریت ادمین", callback_data="admin_panel")])
-
     await message.reply_text(
         f"سلام! 👋 به ربات مدیریت ویدیو خوش آمدید.\n\n"
-        f"🎁 حجم هدیه تست شما: **{remaining}**",
-        reply_markup=keyboard
+        f"🎁 حجم هدیه تست شما: **{remaining}**\n\n"
+        "از دکمه‌های پایین صفحه استفاده کنید:",
+        reply_markup=main_reply_keyboard
     )
 
 @app.on_callback_query()
@@ -137,83 +142,56 @@ async def callback_handler(client: Client, callback_query: CallbackQuery):
 
     if data == "check_membership":
         if await check_forced_sub(client, message):
-            await message.edit_text("✅ عضویت تایید شد! /start را بفرستید.")
+            await message.edit_text("✅ عضویت تایید شد! دکمه شروع را بزنید.")
         else:
             await callback_query.answer("⚠️ هنوز عضو نشده‌اید!", show_alert=True)
         return
 
-    if data == "start_process":
+    if data == "start_process" or data == "cancel":
         if user_id not in ADMINS and user_traffic.get(user_id, 0) <= 0:
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("🛒 خرید اشتراک از @izeucs", url="https://t.me/izeucs")],
-                [InlineKeyboardButton("🔙 بازگشت", callback_data="back_home")]
-            ])
-            await message.edit_text("❌ حجم تست شما تمام شده است. خرید اشتراک:", reply_markup=keyboard)
+            await message.reply_text("❌ حجم تست شما تمام شده است. خرید اشتراک: @izeucs")
             return
 
         user_data[user_id] = {"mode": "waiting_for_photo"}
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("❌ لغو", callback_data="back_home")]])
-        await message.edit_text("🖼️ **مرحله اول:** لطفاً **عکس کاور** را ارسال کنید:", reply_markup=keyboard)
-
-    elif data == "user_account":
-        remaining = "نامحدود (ادمین)" if user_id in ADMINS else f"{user_traffic.get(user_id, 0):.1f} مگابایت"
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت", callback_data="back_home")]])
-        await message.edit_text(f"👤 حساب کاربری:\n🆔 شناسه: `{user_id}`\n📊 حجم باقی‌مانده: **{remaining}**", reply_markup=keyboard)
-
-    elif data == "about_bot":
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت", callback_data="back_home")]])
-        await message.edit_text("ℹ️ ربات پردازش سریع ویدیو و کاور.", reply_markup=keyboard)
-
-    elif data == "back_home":
-        user_data[user_id] = {"mode": "main_menu"}
-        remaining = "نامحدود (ادمین)" if user_id in ADMINS else f"{user_traffic.get(user_id, 0):.1f} مگابایت"
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🎬 شروع پردازش", callback_data="start_process")],
-            [InlineKeyboardButton("👤 حساب من", callback_data="user_account")],
-            [InlineKeyboardButton("🛒 خرید اشتراک", url="https://t.me/izeucs")],
-            [InlineKeyboardButton("ℹ️ درباره ما", callback_data="about_bot")]
-        ])
-        if user_id in ADMINS:
-            keyboard.inline_keyboard.append([InlineKeyboardButton("⚙️ پنل ادمین", callback_data="admin_panel")])
-        await message.edit_text(f"به منو برگشتیم.\n\n📊 حجم باقی‌مانده: **{remaining}**", reply_markup=keyboard)
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("❌ لغو", callback_data="cancel")]])
+        await message.reply_text("🖼️ **مرحله اول:** لطفاً **عکس کاور** مورد نظرتان را ارسال کنید:", reply_markup=keyboard)
 
     elif data == "admin_panel" and user_id in ADMINS:
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("📊 آمار", callback_data="admin_stats")],
-            [InlineKeyboardButton("📢 همگانی", callback_data="admin_broadcast")],
-            [InlineKeyboardButton("🔒 قفل کانال", callback_data="admin_set_channel")],
-            [InlineKeyboardButton("⭐ شارژ حجم", callback_data="admin_set_sub")],
-            [InlineKeyboardButton("🔙 بازگشت", callback_data="back_home")]
+            [InlineKeyboardButton("📊 آمار و لیست کاربران", callback_data="admin_user_list")],
+            [InlineKeyboardButton("⭐ شارژ حجم کاربر", callback_data="admin_set_sub")],
+            [InlineKeyboardButton("🔙 بستن پنل", callback_data="cancel")]
         ])
-        await message.edit_text("⚙️ پنل ادمین:", reply_markup=keyboard)
+        await message.edit_text("⚙️ **پنل مدیریت ادمین:**", reply_markup=keyboard)
 
-    elif data == "admin_stats" and user_id in ADMINS:
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت", callback_data="admin_panel")]])
-        await message.edit_text(f"📊 کل کاربران: {len(users_db)} نفر", reply_markup=keyboard)
-
-    elif data == "admin_broadcast" and user_id in ADMINS:
-        user_data[user_id]["mode"] = "waiting_for_broadcast"
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 لغو", callback_data="admin_panel")]])
-        await message.edit_text("📢 پیام همگانی را بفرستید:", reply_markup=keyboard)
-
-    elif data == "admin_set_channel" and user_id in ADMINS:
-        user_data[user_id]["mode"] = "waiting_for_channel"
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 لغو", callback_data="admin_panel")]])
-        await message.edit_text("🔒 یوزرنیم کانال را بفرستید:", reply_markup=keyboard)
+    elif data == "admin_user_list" and user_id in ADMINS:
+        if not users_db:
+            await callback_query.answer("هنوز کاربری ثبت نشده است.", show_alert=True)
+            return
+        
+        text = f"📊 **لیست کل کاربران ({len(users_db)} نفر):**\n\n"
+        for uid, info in users_db.items():
+            text += f"👤 نام: {info['name']}\n🆔 آیدی عددی: `{uid}`\n🔗 یوزرنیم: {info['username']}\n-------------------\n"
+            
+        # اگر لیست خیلی بلند بود، به بخش‌های کوچک‌تر تقسیم می‌کنیم یا ارسال می‌کنیم
+        if len(text) > 4000:
+            text = text[:4000] + "\n\n... (لیست طولانی است)"
+            
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت به پنل", callback_data="admin_panel")]])
+        await message.edit_text(text, reply_markup=keyboard)
 
     elif data == "admin_set_sub" and user_id in ADMINS:
         user_data[user_id]["mode"] = "waiting_for_sub_info"
         keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 لغو", callback_data="admin_panel")]])
-        await message.edit_text("⭐ فرمت:\n`USER_ID MB`", reply_markup=keyboard)
+        await message.edit_text("⭐ فرمت شارژ حجم:\n`USER_ID MB`\nمثال:\n`123456789 1000`", reply_markup=keyboard)
 
-    # پردازش کیفیت و کاور با FFmpeg و اصلاح متادیتای زمان ویدیو
     elif data.startswith("quality_"):
         if user_id not in user_data or user_data[user_id].get("mode") != "waiting_for_quality":
             await callback_query.answer("⚠️ لطفاً مراحل را طی کنید.", show_alert=True)
             return
 
         await callback_query.answer()
-        status_msg = message
+        status_msg = await message.reply_text("⚙️ در حال پردازش ویدیو با FFmpeg...")
         
         video_path = user_data[user_id].get("video_path")
         photo_path = user_data[user_id].get("photo_path")
@@ -226,13 +204,10 @@ async def callback_handler(client: Client, callback_query: CallbackQuery):
         elif data == "quality_1080": scale_filter = "scale=-2:1080"
         else: scale_filter = "copy"
 
-        await status_msg.edit_text("⚙️ در حال پردازش ویدیو با FFmpeg (رفع مشکل زمان صفر)...")
-
         if scale_filter == "copy":
             cmd = f"ffmpeg -i '{video_path}' -i '{photo_path}' -map 0 -map 1 -c copy -disposition:v:1 attached_pic -movflags +faststart '{output_path}' -y"
         else:
-            # اضافه شدن -movflags +faststart و کپی صحیح استریم‌ها برای رفع مشکل زمان ویدیو
-            cmd = f"ffmpeg -i '{video_path}' -i '{photo_path}' -filter:v:0 '{scale_filter}' -c:v libx264 -preset ultrafast -crf 28 -c:a copy -c:v:1 copy -disposition:v:1 attached_pic -movflags +faststart '{output_path}' -y"
+            cmd = f"ffmpeg -i '{video_path}' -i '{photo_path}' -vf '{scale_filter}' -c:v libx264 -preset ultrafast -crf 28 -c:a copy -c:v:1 copy -disposition:v:1 attached_pic -movflags +faststart '{output_path}' -y"
 
         process = await asyncio.create_subprocess_shell(cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         await process.communicate()
@@ -244,7 +219,7 @@ async def callback_handler(client: Client, callback_query: CallbackQuery):
             chat_id=user_id,
             video=output_path,
             thumb=photo_path,
-            caption="✅ ویدیو با موفقیت پردازش شد و مشکل زمان آن برطرف گردید.",
+            caption="✅ ویدیو با موفقیت پردازش شد.",
             progress=prog_func
         )
 
@@ -259,46 +234,63 @@ async def callback_handler(client: Client, callback_query: CallbackQuery):
 @app.on_message(filters.text | filters.video | filters.document | filters.photo)
 async def media_handler(client: Client, message: Message):
     user_id = message.from_user.id
+    text = message.text
+    
+    # ثبت خودکار اطلاعات کاربر در صورت ارسال پیام
+    name = f"{message.from_user.first_name or ''} {message.from_user.last_name or ''}".strip()
+    username = f"@{message.from_user.username}" if message.from_user.username else "ندارد"
+    if user_id not in users_db:
+        users_db[user_id] = {"name": name if name else "بدون نام", "username": username}
+
     if user_id not in user_data:
         user_data[user_id] = {"mode": "main_menu"}
     
     state = user_data[user_id].get("mode")
 
-    if user_id in ADMINS:
-        if state == "waiting_for_broadcast":
-            count = 0
-            for uid in users_db:
-                try:
-                    await message.copy(chat_id=uid)
-                    count += 1
-                except Exception:
-                    pass
+    # مدیریت کلیک روی دکمه‌های پایین صفحه (Reply Keyboard)
+    if text == "🎬 شروع پردازش (کاور + ویدیو)":
+        if user_id not in ADMINS and user_traffic.get(user_id, 0) <= 0:
+            await message.reply_text("❌ حجم تست شما تمام شده است. خرید اشتراک: @izeucs")
+            return
+        user_data[user_id] = {"mode": "waiting_for_photo"}
+        await message.reply_text("🖼️ **مرحله اول:** لطفاً **عکس کاور** مورد نظرتان را ارسال کنید:")
+        return
+
+    elif text == "👤 حساب من":
+        remaining = "نامحدود (ادمین)" if user_id in ADMINS else f"{user_traffic.get(user_id, 0):.1f} مگابایت"
+        await message.reply_text(f"👤 حساب کاربری:\n🆔 شناسه: `{user_id}`\n📊 حجم باقی‌مانده: **{remaining}**")
+        return
+
+    elif text == "🛒 خرید اشتراک":
+        await message.reply_text("🛒 برای خرید اشتراک و افزایش حجم، به پشتیبانی پیام دهید:\n👉 @izeucs")
+        return
+
+    elif text == "ℹ️ راهنما":
+        await message.reply_text("ℹ️ این ربات برای قرار دادن کاور روی ویدیو و تغییر کیفیت طراحی شده است. از دکمه‌ها استفاده کنید.")
+        return
+
+    # دستور پنل ادمین
+    if user_id in ADMINS and text == "/admin":
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📊 آمار و لیست کاربران", callback_data="admin_user_list")],
+            [InlineKeyboardButton("⭐ شارژ حجم کاربر", callback_data="admin_set_sub")],
+            [InlineKeyboardButton("🔙 بستن", callback_data="cancel")]
+        ])
+        await message.reply_text("⚙️ **پنل مدیریت ادمین:**", reply_markup=keyboard)
+        return
+
+    # شارژ حجم توسط ادمین
+    if user_id in ADMINS and state == "waiting_for_sub_info":
+        try:
+            parts = text.strip().split()
+            target_user = int(parts[0])
+            added_mb = float(parts[1])
+            user_traffic[target_user] = user_traffic.get(target_user, 0) + added_mb
             user_data[user_id]["mode"] = "main_menu"
-            await message.reply_text(f"✅ ارسال به {count} کاربر انجام شد.")
-            return
-
-        elif state == "waiting_for_channel":
-            settings["forced_channel"] = message.text.strip()
-            user_data[user_id]["mode"] = "main_menu"
-            await message.reply_text("✅ کانال تنظیم شد.")
-            return
-
-        elif state == "waiting_for_sub_info":
-            try:
-                parts = message.text.strip().split()
-                target_user = int(parts[0])
-                added_mb = float(parts[1])
-                user_traffic[target_user] = user_traffic.get(target_user, 0) + added_mb
-                user_data[user_id]["mode"] = "main_menu"
-                await message.reply_text(f"✅ {added_mb} MB به کاربر اضافه شد.")
-                await client.send_message(target_user, f"⭐ حساب شما شارژ شد: {added_mb} MB")
-            except Exception:
-                await message.reply_text("❌ فرمت اشتباه است.")
-            return
-
-    if user_id not in ADMINS and user_traffic.get(user_id, 0) <= 0:
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🛒 خرید اشتراک از @izeucs", url="https://t.me/izeucs")]])
-        await message.reply_text("❌ حجم تست شما تمام شده است.", reply_markup=keyboard)
+            await message.reply_text(f"✅ مبلغ {added_mb} MB به کاربر `{target_user}` اضافه شد.")
+            await client.send_message(target_user, f"⭐ حساب شما شارژ شد: {added_mb} MB")
+        except Exception:
+            await message.reply_text("❌ فرمت اشتباه است. مثال: `123456789 1000`")
         return
 
     # ۱. دریافت کاور
@@ -309,8 +301,7 @@ async def media_handler(client: Client, message: Message):
         user_data[user_id]["photo_path"] = photo_path
         user_data[user_id]["mode"] = "waiting_for_video"
         
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("❌ لغو", callback_data="back_home")]])
-        await status_msg.edit_text("✅ کاور دریافت شد!\n\n🎬 **مرحله دوم:** حالا **ویدیو** را بفرستید:", reply_markup=keyboard)
+        await status_msg.edit_text("✅ کاور دریافت شد!\n\n🎬 **مرحله دوم:** حالا **ویدیو** را بفرستید:")
         return
 
     # ۲. دریافت ویدیو
@@ -337,15 +328,14 @@ async def media_handler(client: Client, message: Message):
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("360p", callback_data="quality_360"), InlineKeyboardButton("480p", callback_data="quality_480")],
             [InlineKeyboardButton("720p", callback_data="quality_720"), InlineKeyboardButton("1080p", callback_data="quality_1080")],
-            [InlineKeyboardButton("⚙️ کیفیت اصلی", callback_data="quality_original")],
-            [InlineKeyboardButton("❌ لغو", callback_data="back_home")]
+            [InlineKeyboardButton("⚙️ کیفیت اصلی", callback_data="quality_original")]
         ])
         
         await status_msg.edit_text("✅ ویدیو دانلود شد!\n\n🎚️ **مرحله سوم:** کیفیت خروجی را انتخاب کنید:", reply_markup=keyboard)
         return
 
     elif state == "main_menu":
-        await message.reply_text("⚠️ لطفاً از دکمه‌های شیشه‌ای استفاده کنید.")
+        await message.reply_text("⚠️ لطفاً از دکمه‌های پایین صفحه استفاده کنید:", reply_markup=main_reply_keyboard)
 
-print("Bot is running with fixed video duration metadata...")
+print("Bot is running with Admin User List feature...")
 app.run()
