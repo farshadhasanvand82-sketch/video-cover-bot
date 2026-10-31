@@ -36,7 +36,7 @@ app = Client(
 )
 
 ADMINS = {8886868325, 8250289921}
-ARCHIVE_CHANNEL = -1004448967160  # کانال اختصاصی شما به عنوان هاست و فضای ابری
+ARCHIVE_CHANNEL = -1004448967160  # کانال آرشیو برای مدیریت فایل‌های سنگین بالای ۵۱۲ مگابایت
 
 USERS_FILE = "users_db.json"
 TRAFFIC_FILE = "user_traffic.json"
@@ -226,7 +226,7 @@ async def callback_handler(client: Client, callback_query: CallbackQuery):
                 return
 
             await callback_query.answer()
-            status_msg = await message.reply_text("⚙️ در حال پردازش و آماده‌سازی ویدیو...")
+            status_msg = await message.reply_text("⚙️ در حال پردازش فوق‌سریع ویدیو...")
             
             video_path = user_data[user_id].get("video_path")
             photo_path = user_data[user_id].get("photo_path")
@@ -247,22 +247,33 @@ async def callback_handler(client: Client, callback_query: CallbackQuery):
             process = await asyncio.create_subprocess_shell(cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
             await process.communicate()
 
-            await status_msg.edit_text("📤 در حال آپلود در هاست ابری (کانال) و ارسال به شما...")
-            prog_func = create_progress_callback(status_msg, "📤 **در حال آپلود نهایی:**")
+            # بررسی حجم فایل خروجی برای انتخاب هوشمند مسیر (زیر ۵۱۲ مگابایت یا بالاتر)
+            output_size_mb = os.path.getsize(output_path) / (1024 * 1024)
+            prog_func = create_progress_callback(status_msg, "📤 **در حال ارسال ویدیوی نهایی:**")
 
-            # 1. بارگذاری مستقیم در کانال آرشیو (هاست ابری تلگرام)
-            archive_msg = await client.send_video(
-                chat_id=ARCHIVE_CHANNEL,
-                video=output_path,
-                thumb=photo_path,
-                caption=f"📁 آرشیو ویدیو کاربر: `{user_id}`"
-            )
-
-            # 2. فوروارد یا کپی سریع از کانال برای کاربر (بدون فشار به رم رندر)
-            await archive_msg.copy(
-                chat_id=user_id,
-                caption="✅ ویدیو با موفقیت آماده و ارسال شد."
-            )
+            if output_size_mb <= 512:
+                # زیر ۵۱۲ مگابایت: ارسال مستقیم با حداکثر سرعت از روی رندر
+                await client.send_video(
+                    chat_id=user_id,
+                    video=output_path,
+                    thumb=photo_path,
+                    caption="✅ ویدیو با موفقیت آماده شد.",
+                    progress=prog_func
+                )
+            else:
+                # بالای ۵۱۲ مگابایت: استفاده هوشمند از روش ابری تلگرام (کانال آرشیو) برای دور زدن محدودیت رندر
+                await status_msg.edit_text("☁️ حجم فایل بالا است، در حال انتقال به هاست ابری (کانال)...")
+                archive_msg = await client.send_video(
+                    chat_id=ARCHIVE_CHANNEL,
+                    video=output_path,
+                    thumb=photo_path,
+                    caption=f"📁 آرشیو فایل سنگین کاربر: `{user_id}` ({output_size_mb:.1f} MB)"
+                )
+                await archive_msg.copy(
+                    chat_id=user_id,
+                    caption="✅ ویدیو سنگین شما با موفقیت از هاست ابری آماده و ارسال شد.",
+                    progress=prog_func
+                )
 
             await status_msg.delete()
 
@@ -403,5 +414,5 @@ async def media_handler(client: Client, message: Message):
     except Exception as e:
         print(f"Error in media_handler: {e}")
 
-print("Bot is fully running with Render + Telegram Cloud Channel Architecture...")
+print("Bot is fully running with Intelligent Hybrid Routing (Render / Cloud Channel)...")
 app.run()
