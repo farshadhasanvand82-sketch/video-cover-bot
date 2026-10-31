@@ -3,6 +3,7 @@ import json
 import asyncio
 import time
 import threading
+import aiohttp
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from hydrogram import Client, filters
 from hydrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, ReplyKeyboardMarkup, KeyboardButton
@@ -67,8 +68,9 @@ user_data = {}
 
 def get_reply_keyboard(user_id):
     keyboard = [
-        [KeyboardButton("🎬 شروع پردازش (کاور + ویدیو)"), KeyboardButton("👤 حساب من")],
-        [KeyboardButton("🛒 خرید اشتراک"), KeyboardButton("ℹ️ راهنما")]
+        [KeyboardButton("🎬 شروع پردازش (کاور + ویدیو)"), KeyboardButton("🔗 تبدیل لینک به ویدیو")],
+        [KeyboardButton("👤 حساب من"), KeyboardButton("🛒 خرید اشتراک")],
+        [KeyboardButton("ℹ️ راهنما")]
     ]
     if user_id in ADMINS:
         keyboard.append([KeyboardButton("⚙️ پنل مدیریت ادمین")])
@@ -110,6 +112,52 @@ def create_progress_callback(message, text):
             pass
 
     return progress_callback
+
+async def download_file_from_url(url, output_path, message):
+    start_time = time.time()
+    last_update_time = [0]
+    
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as response:
+            if response.status != 200:
+                raise Exception("خطا در دسترسی به لینک (کد وضعیت: {})".format(response.status))
+            
+            total_size = int(response.headers.get('Content-Length', 0))
+            if total_size > 512 * 1024 * 1024:
+                raise Exception("LIMIT_EXCEEDED")
+
+            downloaded = 0
+            with open(output_path, 'wb') as f:
+                async for chunk in response.content.iter_chunked(1024 * 1024):
+                    if chunk:
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        
+                        if total_size > 0:
+                            now = time.time()
+                            if now - last_update_time[0] >= 1.5:
+                                last_update_time[0] = now
+                                percentage = downloaded * 100 / total_size
+                                elapsed = now - start_time
+                                speed = downloaded / elapsed if elapsed > 0 else 0
+                                
+                                current_mb = downloaded / (1024 * 1024)
+                                total_mb = total_size / (1024 * 1024)
+                                speed_mb = speed / (1024 * 1024)
+
+                                filled = int(percentage // 10)
+                                progress_bar = "█" * filled + "░" * (10 - filled)
+                                
+                                txt = (
+                                    f"📥 **در حال دانلود از لینک:**\n\n"
+                                    f"[{progress_bar}] {percentage:.1f}%\n\n"
+                                    f"📊 حجم: {current_mb:.1f} MB از {total_mb:.1f} MB\n"
+                                    f"⚡ سرعت: {speed_mb:.1f} MB/s"
+                                )
+                                try:
+                                    await message.edit_text(txt)
+                                except Exception:
+                                    pass
 
 async def check_forced_sub(client, message):
     channel = settings.get("forced_channel")
@@ -247,6 +295,14 @@ async def media_handler(client: Client, message: Message):
             await message.reply_text("🖼️ **مرحله اول:** لطفاً **عکس کاور** مورد نظرتان را ارسال کنید:")
             return
 
+        elif text == "🔗 تبدیل لینک به ویدیو":
+            if user_id not in ADMINS and user_traffic.get(user_id, 0) <= 0:
+                await message.reply_text("❌ حجم تست شما تمام شده است. خرید اشتراک: @izeucs")
+                return
+            user_data[user_id] = {"mode": "waiting_for_link_photo"}
+            await message.reply_text("🖼️ **مرحله اول (تبدیل لینک):** لطفاً **عکس کاور** مورد نظرتان را ارسال کنید:")
+            return
+
         elif text == "👤 حساب من":
             remaining = "نامحدود (ادمین)" if user_id in ADMINS else f"{user_traffic.get(user_id, 0):.1f} مگابایت"
             await message.reply_text(f"👤 حساب کاربری:\n🆔 شناسه: `{user_id}`\n📊 حجم باقی‌مانده: **{remaining}**")
@@ -257,7 +313,7 @@ async def media_handler(client: Client, message: Message):
             return
 
         elif text == "ℹ️ راهنما":
-            await message.reply_text("ℹ️ این ربات برای قرار دادن کاور روی ویدیو طراحی شده است.")
+            await message.reply_text("ℹ️ این ربات برای قرار دادن کاور روی ویدیو و تبدیل لینک مستقیم طراحی شده است.")
             return
 
         elif text == "⚙️ پنل مدیریت ادمین" and user_id in ADMINS:
@@ -312,7 +368,80 @@ async def media_handler(client: Client, message: Message):
             user_data[user_id]["photo_path"] = photo_path
             user_data[user_id]["mode"] = "waiting_for_video"
             
-            await status_msg.edit_text("✅ کاور دریافت شد!\n\n🎬 **مرحله دوم:** حالا **ویدیو** را بفرستید:")
+            await status_msg.edit_text("✅ کاور دریافت شد!\n\n🎬 **مرحله دوم:** حالا فایل **ویدیو** را بفرستید:")
+            return
+
+        elif state == "waiting_for_link_photo" and message.photo:
+            status_msg = await message.reply_text("📥 در حال دریافت عکس کاور...")
+            photo_path = await client.download_media(message)
+            
+            user_data[user_id]["photo_path"] = photo_path
+            user_data[user_id]["mode"] = "waiting_for_link_url"
+            
+            await status_msg.edit_text("✅ کاور دریافت شد!\n\n🔗 **مرحله دوم:** حالا **لینک مستقیم دانلود ویدیو** را ارسال کنید:")
+            return
+
+        elif state == "waiting_for_link_url" and text and text.startswith("http"):
+            if not await check_forced_sub(client, message):
+                return
+
+            status_msg = await message.reply_text("🔍 در حال بررسی لینک و استعلام حجم فایل...")
+            photo_path = user_data[user_id].get("photo_path")
+            video_path = f"downloaded_{user_id}.mp4"
+            output_path = f"output_{user_id}.mp4"
+
+            try:
+                # دانلود با بررسی حجم و نمایش درصد پیشرفت
+                await download_file_from_url(text, video_path, status_msg)
+            except Exception as e:
+                if str(e) == "LIMIT_EXCEEDED":
+                    await status_msg.edit_text("❌ حجم فایل موجود در لینک بیشتر از حد مجاز (۵۱۲ مگابایت) است و برای محافظت از سرور قابل پردازش نیست.")
+                else:
+                    await status_msg.edit_text(f"❌ خطا در دانلود فایل از لینک:\n`{str(e)}`")
+                if os.path.exists(video_path):
+                    os.remove(video_path)
+                if photo_path and os.path.exists(photo_path):
+                    os.remove(photo_path)
+                user_data[user_id] = {"mode": "main_menu"}
+                return
+
+            # بررسی حجم دانلود شده برای کسر از ترافیک کاربر
+            file_size_mb = os.path.getsize(video_path) / (1024 * 1024)
+            if user_id not in ADMINS:
+                if user_traffic.get(user_id, 0) < file_size_mb:
+                    await status_msg.edit_text(f"❌ حجم فایل ({file_size_mb:.1f} MB) از اعتبار شما بیشتر است!\nخرید: @izeucs")
+                    for p in [video_path, photo_path]:
+                        if p and os.path.exists(p):
+                            os.remove(p)
+                    user_data[user_id] = {"mode": "main_menu"}
+                    return
+                user_traffic[user_id] -= file_size_mb
+                save_json(TRAFFIC_FILE, user_traffic)
+
+            await status_msg.edit_text("⚙️ در حال پردازش فوق‌سریع و قرار دادن کاور...")
+            
+            cmd = f"ffmpeg -i '{video_path}' -map 0:v -map 0:a -c copy -movflags +faststart '{output_path}' -y"
+            process = await asyncio.create_subprocess_shell(cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            await process.communicate()
+
+            await status_msg.edit_text("📤 در حال ارسال ویدیوی نهایی...")
+            upload_prog = create_progress_callback(status_msg, "📤 **در حال ارسال ویدیوی نهایی:**")
+
+            await client.send_video(
+                chat_id=user_id,
+                video=output_path,
+                thumb=photo_path,
+                caption="✅ لینک شما با موفقیت به ویدیو تبدیل شد.",
+                progress=upload_prog
+            )
+
+            await status_msg.delete()
+
+            for p in [video_path, photo_path, output_path]:
+                if p and os.path.exists(p):
+                    os.remove(p)
+
+            user_data[user_id] = {"mode": "main_menu"}
             return
 
         elif state == "waiting_for_video" and (message.video or message.document):
@@ -321,9 +450,8 @@ async def media_handler(client: Client, message: Message):
                 
             media_size_mb = (message.video.file_size if message.video else message.document.file_size) / (1024 * 1024)
             
-            # قفل حجم بالای ۵۱۲ مگابایت برای محافظت از سرور Render
             if media_size_mb > 512:
-                await message.reply_text(f"❌ حجم ویدیو ({media_size_mb:.1f} MB) بیشتر از حد مجاز (۵۱۲ مگابایت) است!\n\nلطفاً ویدیوهای زیر ۵۱۲ مگابایت ارسال کنید.")
+                await message.reply_text(f"❌ حجم ویدیو ({media_size_mb:.1f} MB) بیشتر از حد مجاز (۵۱۲ مگابایت) است!")
                 return
 
             if user_id not in ADMINS:
@@ -342,7 +470,6 @@ async def media_handler(client: Client, message: Message):
 
             await status_msg.edit_text("⚙️ در حال پردازش فوق‌سریع ویدیو...")
             
-            # پردازش مستقیم با سرعت بالا و بدون افت کیفیت (تک‌مرحله‌ای)
             cmd = f"ffmpeg -i '{video_path}' -map 0:v -map 0:a -c copy -movflags +faststart '{output_path}' -y"
             process = await asyncio.create_subprocess_shell(cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
             await process.communicate()
@@ -350,7 +477,6 @@ async def media_handler(client: Client, message: Message):
             await status_msg.edit_text("📤 در حال ارسال ویدیوی نهایی...")
             upload_prog = create_progress_callback(status_msg, "📤 **در حال ارسال ویدیوی نهایی:**")
 
-            # ارسال مستقیم به کاربر همراه با تگ کاور (Thumbnail)
             await client.send_video(
                 chat_id=user_id,
                 video=output_path,
@@ -373,5 +499,5 @@ async def media_handler(client: Client, message: Message):
     except Exception as e:
         print(f"Error in media_handler: {e}")
 
-print("Bot is running with fully automated fast processing and strict 512MB limit...")
+print("Bot is running with Direct Link Downloader and strict 512MB protection...")
 app.run()
