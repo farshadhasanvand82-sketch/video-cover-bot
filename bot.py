@@ -36,7 +36,6 @@ app = Client(
 )
 
 ADMINS = {8886868325, 8250289921}
-ARCHIVE_CHANNEL = -1004448967160  # کانال آرشیو برای مدیریت فایل‌های سنگین بالای ۵۱۲ مگابایت
 
 USERS_FILE = "users_db.json"
 TRAFFIC_FILE = "user_traffic.json"
@@ -219,69 +218,6 @@ async def callback_handler(client: Client, callback_query: CallbackQuery):
             user_data[user_id]["mode"] = "waiting_for_sub_info"
             keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 لغو", callback_data="admin_panel")]])
             await message.edit_text("⭐ فرمت شارژ حجم:\n`USER_ID MB`\nمثال:\n`123456789 1000`", reply_markup=keyboard)
-
-        elif data.startswith("quality_"):
-            if user_id not in user_data or user_data[user_id].get("mode") != "waiting_for_quality":
-                await callback_query.answer("⚠️ لطفاً مراحل را طی کنید.", show_alert=True)
-                return
-
-            await callback_query.answer()
-            status_msg = await message.reply_text("⚙️ در حال پردازش فوق‌سریع ویدیو...")
-            
-            video_path = user_data[user_id].get("video_path")
-            photo_path = user_data[user_id].get("photo_path")
-            output_path = f"output_{user_id}.mp4"
-
-            scale_filter = ""
-            if data == "quality_360": scale_filter = "scale=-2:360"
-            elif data == "quality_480": scale_filter = "scale=-2:480"
-            elif data == "quality_720": scale_filter = "scale=-2:720"
-            elif data == "quality_1080": scale_filter = "scale=-2:1080"
-            else: scale_filter = "copy"
-
-            if scale_filter == "copy":
-                cmd = f"ffmpeg -i '{video_path}' -map 0:v -map 0:a -c copy -movflags +faststart '{output_path}' -y"
-            else:
-                cmd = f"ffmpeg -i '{video_path}' -vf '{scale_filter}' -c:v libx264 -preset ultrafast -crf 30 -threads 1 -maxrate 1000k -bufsize 2000k -c:a copy -movflags +faststart '{output_path}' -y"
-
-            process = await asyncio.create_subprocess_shell(cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-            await process.communicate()
-
-            # بررسی حجم فایل خروجی برای انتخاب هوشمند مسیر (زیر ۵۱۲ مگابایت یا بالاتر)
-            output_size_mb = os.path.getsize(output_path) / (1024 * 1024)
-            prog_func = create_progress_callback(status_msg, "📤 **در حال ارسال ویدیوی نهایی:**")
-
-            if output_size_mb <= 512:
-                # زیر ۵۱۲ مگابایت: ارسال مستقیم با حداکثر سرعت از روی رندر
-                await client.send_video(
-                    chat_id=user_id,
-                    video=output_path,
-                    thumb=photo_path,
-                    caption="✅ ویدیو با موفقیت آماده شد.",
-                    progress=prog_func
-                )
-            else:
-                # بالای ۵۱۲ مگابایت: استفاده هوشمند از روش ابری تلگرام (کانال آرشیو) برای دور زدن محدودیت رندر
-                await status_msg.edit_text("☁️ حجم فایل بالا است، در حال انتقال به هاست ابری (کانال)...")
-                archive_msg = await client.send_video(
-                    chat_id=ARCHIVE_CHANNEL,
-                    video=output_path,
-                    thumb=photo_path,
-                    caption=f"📁 آرشیو فایل سنگین کاربر: `{user_id}` ({output_size_mb:.1f} MB)"
-                )
-                await archive_msg.copy(
-                    chat_id=user_id,
-                    caption="✅ ویدیو سنگین شما با موفقیت از هاست ابری آماده و ارسال شد.",
-                    progress=prog_func
-                )
-
-            await status_msg.delete()
-
-            for p in [video_path, photo_path, output_path]:
-                if p and os.path.exists(p):
-                    os.remove(p)
-
-            user_data[user_id] = {"mode": "main_menu"}
     except Exception as e:
         print(f"Error in callback: {e}")
 
@@ -321,7 +257,7 @@ async def media_handler(client: Client, message: Message):
             return
 
         elif text == "ℹ️ راهنما":
-            await message.reply_text("ℹ️ این ربات برای قرار دادن کاور روی ویدیو و تغییر کیفیت طراحی شده است.")
+            await message.reply_text("ℹ️ این ربات برای قرار دادن کاور روی ویدیو طراحی شده است.")
             return
 
         elif text == "⚙️ پنل مدیریت ادمین" and user_id in ADMINS:
@@ -385,6 +321,11 @@ async def media_handler(client: Client, message: Message):
                 
             media_size_mb = (message.video.file_size if message.video else message.document.file_size) / (1024 * 1024)
             
+            # قفل حجم بالای ۵۱۲ مگابایت برای محافظت از سرور Render
+            if media_size_mb > 512:
+                await message.reply_text(f"❌ حجم ویدیو ({media_size_mb:.1f} MB) بیشتر از حد مجاز (۵۱۲ مگابایت) است!\n\nلطفاً ویدیوهای زیر ۵۱۲ مگابایت ارسال کنید.")
+                return
+
             if user_id not in ADMINS:
                 if user_traffic.get(user_id, 0) < media_size_mb:
                     await message.reply_text(f"❌ حجم ویدیو ({media_size_mb:.1f} MB) از اعتبار شما بیشتر است!\nخرید: @izeucs")
@@ -396,17 +337,35 @@ async def media_handler(client: Client, message: Message):
             prog_func = create_progress_callback(status_msg, "📥 **در حال دانلود ویدیو:**")
             
             video_path = await client.download_media(message, progress=prog_func)
+            photo_path = user_data[user_id].get("photo_path")
+            output_path = f"output_{user_id}.mp4"
+
+            await status_msg.edit_text("⚙️ در حال پردازش فوق‌سریع ویدیو...")
             
-            user_data[user_id]["video_path"] = video_path
-            user_data[user_id]["mode"] = "waiting_for_quality"
-            
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("360p", callback_data="quality_360"), InlineKeyboardButton("480p", callback_data="quality_480")],
-                [InlineKeyboardButton("720p", callback_data="quality_720"), InlineKeyboardButton("1080p", callback_data="quality_1080")],
-                [InlineKeyboardButton("⚙️ کیفیت اصلی (پر سرعت)", callback_data="quality_original")]
-            ])
-            
-            await status_msg.edit_text("✅ ویدیو دانلود شد!\n\n🎚️ **مرحله سوم:** کیفیت خروجی را انتخاب کنید:", reply_markup=keyboard)
+            # پردازش مستقیم با سرعت بالا و بدون افت کیفیت (تک‌مرحله‌ای)
+            cmd = f"ffmpeg -i '{video_path}' -map 0:v -map 0:a -c copy -movflags +faststart '{output_path}' -y"
+            process = await asyncio.create_subprocess_shell(cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            await process.communicate()
+
+            await status_msg.edit_text("📤 در حال ارسال ویدیوی نهایی...")
+            upload_prog = create_progress_callback(status_msg, "📤 **در حال ارسال ویدیوی نهایی:**")
+
+            # ارسال مستقیم به کاربر همراه با تگ کاور (Thumbnail)
+            await client.send_video(
+                chat_id=user_id,
+                video=output_path,
+                thumb=photo_path,
+                caption="✅ ویدیو با موفقیت آماده شد.",
+                progress=upload_prog
+            )
+
+            await status_msg.delete()
+
+            for p in [video_path, photo_path, output_path]:
+                if p and os.path.exists(p):
+                    os.remove(p)
+
+            user_data[user_id] = {"mode": "main_menu"}
             return
 
         elif state == "main_menu":
@@ -414,5 +373,5 @@ async def media_handler(client: Client, message: Message):
     except Exception as e:
         print(f"Error in media_handler: {e}")
 
-print("Bot is fully running with Intelligent Hybrid Routing (Render / Cloud Channel)...")
+print("Bot is running with fully automated fast processing and strict 512MB limit...")
 app.run()
