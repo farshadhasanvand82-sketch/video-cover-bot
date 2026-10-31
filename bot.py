@@ -1,4 +1,5 @@
 import os
+import json
 import asyncio
 import time
 import threading
@@ -36,9 +37,34 @@ app = Client(
 
 ADMINS = {8886868325, 8250289921}
 
-users_db = {}     # {user_id: {"name": ..., "username": ...}}
-user_traffic = {} # حجم کاربران
-settings = {"forced_channel": None}
+# فایل‌های ذخیره‌سازی دائمی روی هاست برای جلوگیری از پاک شدن اطلاعات هنگام آپدیت
+USERS_FILE = "users_db.json"
+TRAFFIC_FILE = "user_traffic.json"
+SETTINGS_FILE = "settings.json"
+
+def load_json(filename, default_val):
+    if os.path.exists(filename):
+        try:
+            with open(filename, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(default_val, dict):
+                    return {int(k) if k.isdigit() or (k.startswith('-') and k[1:].isdigit()) else k: v for k, v in data.items()}
+                return data
+        except Exception:
+            return default_val
+    return default_val
+
+def save_json(filename, data):
+    try:
+        with open(filename, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=4)
+    except Exception:
+        pass
+
+# بارگیری اطلاعات از فایل‌های دائمی
+users_db = load_json(USERS_FILE, {})
+user_traffic = load_json(TRAFFIC_FILE, {})
+settings = load_json(SETTINGS_FILE, {"forced_channel": None})
 user_data = {}
 
 # کیبورد دائمی پایین صفحه
@@ -114,10 +140,13 @@ async def start_handler(client: Client, message: Message):
     
     name = f"{message.from_user.first_name or ''} {message.from_user.last_name or ''}".strip()
     username = f"@{message.from_user.username}" if message.from_user.username else "ندارد"
+    
     users_db[user_id] = {"name": name if name else "بدون نام", "username": username}
+    save_json(USERS_FILE, users_db)
     
     if user_id not in user_traffic and user_id not in ADMINS:
         user_traffic[user_id] = 500.0
+        save_json(TRAFFIC_FILE, user_traffic)
 
     user_data[user_id] = {"mode": "main_menu"}
     
@@ -244,15 +273,17 @@ async def media_handler(client: Client, message: Message):
     
     name = f"{message.from_user.first_name or ''} {message.from_user.last_name or ''}".strip()
     username = f"@{message.from_user.username}" if message.from_user.username else "ندارد"
+    
     if user_id not in users_db:
         users_db[user_id] = {"name": name if name else "بدون نام", "username": username}
+        save_json(USERS_FILE, users_db)
 
     if user_id not in user_data:
         user_data[user_id] = {"mode": "main_menu"}
     
     state = user_data[user_id].get("mode")
 
-    # مدیریت دکمه‌های کیبورد پایین صفحه
+    # مدیریت دکمه‌های پایین صفحه
     if text == "🎬 شروع پردازش (کاور + ویدیو)":
         if user_id not in ADMINS and user_traffic.get(user_id, 0) <= 0:
             await message.reply_text("❌ حجم تست شما تمام شده است. خرید اشتراک: @izeucs")
@@ -301,6 +332,7 @@ async def media_handler(client: Client, message: Message):
 
         elif state == "waiting_for_channel":
             settings["forced_channel"] = message.text.strip()
+            save_json(SETTINGS_FILE, settings)
             user_data[user_id]["mode"] = "main_menu"
             await message.reply_text(f"✅ قفل کانال روی {message.text.strip()} تنظیم شد.")
             return
@@ -311,6 +343,7 @@ async def media_handler(client: Client, message: Message):
                 target_user = int(parts[0])
                 added_mb = float(parts[1])
                 user_traffic[target_user] = user_traffic.get(target_user, 0) + added_mb
+                save_json(TRAFFIC_FILE, user_traffic)
                 user_data[user_id]["mode"] = "main_menu"
                 await message.reply_text(f"✅ مبلغ {added_mb} MB به کاربر `{target_user}` اضافه شد.")
                 await client.send_message(target_user, f"⭐ حساب شما شارژ شد: {added_mb} MB")
@@ -341,6 +374,7 @@ async def media_handler(client: Client, message: Message):
                 await message.reply_text(f"❌ حجم ویدیو ({media_size_mb:.1f} MB) از اعتبار شما بیشتر است!\nخرید: @izeucs")
                 return
             user_traffic[user_id] -= media_size_mb
+            save_json(TRAFFIC_FILE, user_traffic)
 
         status_msg = await message.reply_text("📥 در حال دانلود ویدیو...")
         prog_func = create_progress_callback(status_msg, "📥 **در حال دانلود ویدیو:**")
@@ -362,5 +396,5 @@ async def media_handler(client: Client, message: Message):
     elif state == "main_menu":
         await message.reply_text("⚠️ لطفاً از دکمه‌های پایین صفحه استفاده کنید:", reply_markup=get_reply_keyboard(user_id))
 
-print("Bot is running with full Admin Panel & User List...")
+print("Bot is running with persistent JSON storage for users and traffic...")
 app.run()
