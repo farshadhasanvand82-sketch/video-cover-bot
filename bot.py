@@ -2,6 +2,7 @@ import os
 import asyncio
 import time
 import threading
+import subprocess
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from hydrogram import Client, filters
 from hydrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
@@ -33,42 +34,45 @@ app = Client(
     in_memory=True
 )
 
-# حافظه موقت برای ذخیره اطلاعات ویدیو، کاور و وضعیت کاربران
 user_data = {}
 
-# تابع نمایش درصد پیشرفت زنده
-def progress(current, total, message, text):
-    if total == 0:
-        return
-    now = time.time()
-    if hasattr(progress, "last_time") and now - progress.last_time < 1.5:
-        return
-    progress.last_time = now
+# تابع پیشرفته نمایش درصد پیشرفت
+def create_progress_callback(message, text):
+    start_time = time.time()
+    last_update_time = [0]
 
-    percentage = current * 100 / total
-    elapsed = now - getattr(progress, "start_time", now)
-    speed = current / elapsed if elapsed > 0 else 0
-    
-    current_mb = current / (1024 * 1024)
-    total_mb = total / (1024 * 1024)
-    speed_mb = speed / (1024 * 1024)
+    async def progress_callback(current, total):
+        if total == 0:
+            return
+        now = time.time()
+        if now - last_update_time[0] < 1.5:
+            return
+        last_update_time[0] = now
 
-    filled = int(percentage // 10)
-    progress_bar = "█" * filled + "░" * (10 - filled)
-    
-    txt = (
-        f"{text}\n\n"
-        f"[{progress_bar}] {percentage:.1f}%\n\n"
-        f"📊 حجم: {current_mb:.1f} MB از {total_mb:.1f} MB\n"
-        f"⚡ سرعت: {speed_mb:.1f} MB/s"
-    )
-    
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            loop.create_task(message.edit_text(txt))
-    except Exception:
-        pass
+        percentage = current * 100 / total
+        elapsed = now - start_time
+        speed = current / elapsed if elapsed > 0 else 0
+        
+        current_mb = current / (1024 * 1024)
+        total_mb = total / (1024 * 1024)
+        speed_mb = speed / (1024 * 1024)
+
+        filled = int(percentage // 10)
+        progress_bar = "█" * filled + "░" * (10 - filled)
+        
+        txt = (
+            f"{text}\n\n"
+            f"[{progress_bar}] {percentage:.1f}%\n\n"
+            f"📊 حجم: {current_mb:.1f} MB از {total_mb:.1f} MB\n"
+            f"⚡ سرعت: {speed_mb:.1f} MB/s"
+        )
+        
+        try:
+            await message.edit_text(txt)
+        except Exception:
+            pass
+
+    return progress_callback
 
 @app.on_message(filters.command("start"))
 async def start_handler(client: Client, message: Message):
@@ -76,9 +80,44 @@ async def start_handler(client: Client, message: Message):
     user_data[user_id] = {"mode": "waiting_for_video"}
     
     await message.reply_text(
-        "سلام! 👋 به ربات پردازش ویدیو و کاور خوش آمدید.\n\n"
-        "مرحله اول: لطفاً **ویدیو**ی خود را ارسال کنید:"
+        "سلام! 👋 به ربات پیشرفته پردازش ویدیو خوش آمدید.\n\n"
+        "🎬 می‌توانید **ویدیو** بفرستید تا کاور و کیفیتش را تنظیم کنید، یا\n"
+        "🔗 **لینک پست اینستاگرام** را بفرستید تا آن را دانلود کرده و برایتان بفرستم!"
     )
+
+# مدیریت لینک‌های اینستاگرام یا ارسال متن
+@app.on_message(filters.text & ~filters.command("start"))
+async def text_handler(client: Client, message: Message):
+    text = message.text.strip()
+    
+    # بررسی اینکه آیا متن لینک اینستاگرام است یا خیر
+    if "instagram.com" in text:
+        status_msg = await message.reply_text("📥 در حال اتصال به اینستاگرام و دانلود ویدیو...")
+        
+        output_template = f"insta_{message.id}.mp4"
+        # استفاده از yt-dlp برای دانلود پست اینستاگرام
+        cmd = f"yt-dlp -o '{output_template}' '{text}'"
+        
+        process = await asyncio.create_subprocess_shell(
+            cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await process.communicate()
+        
+        if os.path.exists(output_template):
+            await status_msg.edit_text("📤 در حال ارسال ویدیوی اینستاگرام...")
+            await client.send_video(
+                chat_id=message.chat.id,
+                video=output_template,
+                caption="✅ ویدیوی اینستاگرام با موفقیت دانلود و ارسال شد."
+            )
+            await status_msg.delete()
+            os.remove(output_template)
+        else:
+            await status_msg.edit_text("❌ دانلود از اینستاگرام با خطا مواجه شد. لطفاً از درست بودن لینک مطمئن شوید.")
+    else:
+        await message.reply_text("⚠️ برای شروع پردازش ویدیو، لطفاً یک ویدیو ارسال کنید یا لینک پست اینستاگرام بفرستید.")
 
 @app.on_message(filters.video | filters.document | filters.photo)
 async def media_handler(client: Client, message: Message):
@@ -90,19 +129,15 @@ async def media_handler(client: Client, message: Message):
 
     # ۱. دریافت ویدیو
     if state == "waiting_for_video" and (message.video or message.document):
-        status_msg = await message.reply_text("📥 در حال آماده‌سازی برای دانلود ویدیو...")
-        progress.start_time = time.time()
+        status_msg = await message.reply_text("📥 در حال شروع دانلود ویدیو...")
+        prog_func = create_progress_callback(status_msg, "📥 **در حال دانلود ویدیو:**")
         
-        video_path = await client.download_media(
-            message,
-            progress=progress,
-            progress_args=(status_msg, "📥 **در حال دانلود ویدیو:**")
-        )
+        video_path = await client.download_media(message, progress=prog_func)
         
         user_data[user_id]["video_path"] = video_path
         user_data[user_id]["mode"] = "waiting_for_photo"
         
-        await status_msg.edit_text("✅ ویدیو دریافت شد!\n\n🖼️ مرحله دوم: لطفاً **عکس کاور** مورد نظرتان را بفرستید.")
+        await status_msg.edit_text("✅ ویدیو دانلود شد!\n\n🖼️ مرحله دوم: لطفاً **عکس کاور** را بفرستید.")
         return
 
     # ۲. دریافت عکس کاور
@@ -113,24 +148,22 @@ async def media_handler(client: Client, message: Message):
         user_data[user_id]["photo_path"] = photo_path
         user_data[user_id]["mode"] = "waiting_for_quality"
         
-        # نمایش منوی انتخاب کیفیت
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("360p", callback_data="quality_360"), InlineKeyboardButton("480p", callback_data="quality_480")],
             [InlineKeyboardButton("720p", callback_data="quality_720"), InlineKeyboardButton("1080p", callback_data="quality_1080")],
-            [InlineKeyboardButton("⚙️ کیفیت اصلی (بدون تغییر اندازه)", callback_data="quality_original")]
+            [InlineKeyboardButton("⚙️ کیفیت اصلی", callback_data="quality_original")]
         ])
         
         await status_msg.edit_text(
-            "✅ کاور دریافت شد!\n\n"
-            "🎚️ مرحله سوم: لطفاً کیفیت خروجی ویدیو را انتخاب کنید:",
+            "✅ کاور دریافت شد!\n\n🎚️ مرحله سوم: کیفیت خروجی را انتخاب کنید:",
             reply_markup=keyboard
         )
         return
 
     else:
-        await message.reply_text("⚠️ لطفاً طبق مراحل پیش بروید. برای شروع /start را بزنید.")
+        await message.reply_text("⚠️ لطفاً مراحل را به ترتیب دنبال کنید یا لینک اینستاگرام بفرستید.")
 
-# ۳. مدیریت دکمه‌های انتخاب کیفیت و پردازش نهایی با FFmpeg
+# ۳. پردازش کیفیت و اعمال کاور
 @app.on_callback_query()
 async def quality_callback(client: Client, callback_query: CallbackQuery):
     data = callback_query.data
@@ -147,54 +180,40 @@ async def quality_callback(client: Client, callback_query: CallbackQuery):
     photo_path = user_data[user_id].get("photo_path")
     output_path = f"output_{user_id}.mp4"
 
-    # تعیین فیلتر مقیاس (Scale) بر اساس کیفیت انتخابی
-    scale_filter = ""
-    if data == "quality_360":
-        scale_filter = "scale=-2:360"
-    elif data == "quality_480":
-        scale_filter = "scale=-2:480"
-    elif data == "quality_720":
-        scale_filter = "scale=-2:720"
-    elif data == "quality_1080":
-        scale_filter = "scale=-2:1080"
-    else:
-        scale_filter = "copy" # کیفیت اصلی
+    scale_filter = "copy"
+    if data == "quality_360": scale_filter = "scale=-2:360"
+    elif data == "quality_480": scale_filter = "scale=-2:480"
+    elif data == "quality_720": scale_filter = "scale=-2:720"
+    elif data == "quality_1080": scale_filter = "scale=-2:1080"
 
-    await status_msg.edit_text("⚙️ در حال الصاق کاور و تغییر کیفیت با FFmpeg...")
+    await status_msg.edit_text("⚙️ در حال الصاق کاور و تغییر کیفیت...")
 
-    # دستور FFmpeg برای چسباندن کاور و تغییر رزولوشن ویدیو
     if scale_filter == "copy":
         cmd = f"ffmpeg -i '{video_path}' -i '{photo_path}' -map 0 -map 1 -c copy -disposition:v:1 attached_pic '{output_path}' -y"
     else:
         cmd = f"ffmpeg -i '{video_path}' -i '{photo_path}' -filter:v:0 '{scale_filter}' -map 0:v -map 0:a? -map 1:v -c:v:0 libx264 -c:a copy -c:v:1 copy -disposition:v:1 attached_pic '{output_path}' -y"
 
-    process = await asyncio.create_subprocess_shell(
-        cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE
-    )
+    process = await asyncio.create_subprocess_shell(cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
     await process.communicate()
 
-    await status_msg.edit_text("📤 در حال آماده‌سازی برای آپلود ویدیوی نهایی...")
-    progress.start_time = time.time()
+    await status_msg.edit_text("📤 در حال آپلود ویدیوی نهایی...")
+    prog_func = create_progress_callback(status_msg, "📤 **در حال آپلود ویدیوی نهایی:**")
 
     await client.send_video(
         chat_id=user_id,
         video=output_path,
         thumb=photo_path,
-        caption="✅ ویدیو با موفقیت پردازش شد و کاور و کیفیت جدید روی آن اعمال گردید.",
-        progress=progress,
-        progress_args=(status_msg, "📤 **در حال آپلود ویدیوی نهایی:**")
+        caption="✅ ویدیو با موفقیت پردازش شد.",
+        progress=prog_func
     )
 
     await status_msg.delete()
 
-    # پاکسازی فایل‌ها از روی هاست رندر درجا
     for p in [video_path, photo_path, output_path]:
         if p and os.path.exists(p):
             os.remove(p)
 
     user_data[user_id] = {"mode": "waiting_for_video"}
 
-print("Bot is running with Cover, Quality selection, and Live Progress...")
+print("Bot is running with Instagram Downloader and Cover features...")
 app.run()
