@@ -226,7 +226,7 @@ async def callback_handler(client: Client, callback_query: CallbackQuery):
                 return
 
             await callback_query.answer()
-            status_msg = await message.reply_text("⚙️ در حال پردازش ویدیو با FFmpeg...")
+            status_msg = await message.reply_text("⚙️ در حال پردازش ویدیو...")
             
             video_path = user_data[user_id].get("video_path")
             photo_path = user_data[user_id].get("photo_path")
@@ -239,11 +239,11 @@ async def callback_handler(client: Client, callback_query: CallbackQuery):
             elif data == "quality_1080": scale_filter = "scale=-2:1080"
             else: scale_filter = "copy"
 
-            # دستورات بهینه‌شده برای مدیریت رم و فایل‌های حجیم تا ۲ گیگابایت
+            # پردازش بدون چسباندن کاور به داخل فریم‌های ویدیو (کاور فقط به عنوان تگ و پیش‌نمایش ارسال می‌شود)
             if scale_filter == "copy":
-                cmd = f"ffmpeg -i '{video_path}' -i '{photo_path}' -map 0 -map 1 -c copy -disposition:v:1 attached_pic -movflags +faststart '{output_path}' -y"
+                cmd = f"ffmpeg -i '{video_path}' -map 0:v -map 0:a -c copy -movflags +faststart '{output_path}' -y"
             else:
-                cmd = f"ffmpeg -i '{video_path}' -i '{photo_path}' -vf '{scale_filter}' -c:v libx264 -preset ultrafast -crf 30 -threads 1 -maxrate 1000k -bufsize 2000k -c:a copy -c:v:1 copy -disposition:v:1 attached_pic -movflags +faststart '{output_path}' -y"
+                cmd = f"ffmpeg -i '{video_path}' -vf '{scale_filter}' -c:v libx264 -preset ultrafast -crf 30 -threads 1 -maxrate 1000k -bufsize 2000k -c:a copy -movflags +faststart '{output_path}' -y"
 
             process = await asyncio.create_subprocess_shell(cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
             await process.communicate()
@@ -251,11 +251,12 @@ async def callback_handler(client: Client, callback_query: CallbackQuery):
             await status_msg.edit_text("📤 در حال آپلود ویدیوی نهایی...")
             prog_func = create_progress_callback(status_msg, "📤 **در حال آپلود ویدیوی نهایی:**")
 
+            # ارسال ویدیو همراه با کاور به عنوان تصویر پیش‌نمایش (Thumbnail)
             await client.send_video(
                 chat_id=user_id,
                 video=output_path,
                 thumb=photo_path,
-                caption="✅ ویدیو با موفقیت پردازش شد.",
+                caption="✅ ویدیو با موفقیت آماده شد.",
                 progress=prog_func
             )
 
@@ -398,5 +399,5 @@ async def media_handler(client: Client, message: Message):
     except Exception as e:
         print(f"Error in media_handler: {e}")
 
-print("Bot is fully running with persistent storage and optimized FFmpeg...")
+print("Bot is fully running with persistent storage and thumbnail-only cover mode...")
 app.run()
