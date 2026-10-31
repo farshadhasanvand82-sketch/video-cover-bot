@@ -8,12 +8,12 @@ from hydrogram import Client, filters
 from hydrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, ReplyKeyboardMarkup, KeyboardButton
 from hydrogram.errors import UserNotParticipant
 
-# --- راه‌اندازی سرور وب کوچک برای رندر ---
+# --- راه‌اندازی سرور وب کوچک برای زنده نگه داشتن رندر ---
 class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"ZEUC TV Bot is running!")
+        self.wfile.write(b"ZEUC TV Bot is running perfectly!")
 
 def run_server():
     port = int(os.environ.get("PORT", 10000))
@@ -21,7 +21,7 @@ def run_server():
     server.serve_forever()
 
 threading.Thread(target=run_server, daemon=True).start()
-# ----------------------------------------
+# ---------------------------------------------------------
 
 API_ID = 2040
 API_HASH = "b18441a1ff607e10a989891a5462e627"
@@ -36,6 +36,7 @@ app = Client(
 )
 
 ADMINS = {8886868325, 8250289921}
+ARCHIVE_CHANNEL = -1004448967160  # کانال اختصاصی شما به عنوان هاست و فضای ابری
 
 USERS_FILE = "users_db.json"
 TRAFFIC_FILE = "user_traffic.json"
@@ -60,7 +61,6 @@ def save_json(filename, data):
     except Exception:
         pass
 
-# بارگیری امن اطلاعات از فایل‌های دائمی
 users_db = load_json(USERS_FILE, {})
 user_traffic = load_json(TRAFFIC_FILE, {})
 settings = load_json(SETTINGS_FILE, {"forced_channel": None})
@@ -226,7 +226,7 @@ async def callback_handler(client: Client, callback_query: CallbackQuery):
                 return
 
             await callback_query.answer()
-            status_msg = await message.reply_text("⚙️ در حال پردازش ویدیو...")
+            status_msg = await message.reply_text("⚙️ در حال پردازش و آماده‌سازی ویدیو...")
             
             video_path = user_data[user_id].get("video_path")
             photo_path = user_data[user_id].get("photo_path")
@@ -239,7 +239,6 @@ async def callback_handler(client: Client, callback_query: CallbackQuery):
             elif data == "quality_1080": scale_filter = "scale=-2:1080"
             else: scale_filter = "copy"
 
-            # پردازش بدون چسباندن کاور به داخل فریم‌های ویدیو (کاور فقط به عنوان تگ و پیش‌نمایش ارسال می‌شود)
             if scale_filter == "copy":
                 cmd = f"ffmpeg -i '{video_path}' -map 0:v -map 0:a -c copy -movflags +faststart '{output_path}' -y"
             else:
@@ -248,16 +247,21 @@ async def callback_handler(client: Client, callback_query: CallbackQuery):
             process = await asyncio.create_subprocess_shell(cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
             await process.communicate()
 
-            await status_msg.edit_text("📤 در حال آپلود ویدیوی نهایی...")
-            prog_func = create_progress_callback(status_msg, "📤 **در حال آپلود ویدیوی نهایی:**")
+            await status_msg.edit_text("📤 در حال آپلود در هاست ابری (کانال) و ارسال به شما...")
+            prog_func = create_progress_callback(status_msg, "📤 **در حال آپلود نهایی:**")
 
-            # ارسال ویدیو همراه با کاور به عنوان تصویر پیش‌نمایش (Thumbnail)
-            await client.send_video(
-                chat_id=user_id,
+            # 1. بارگذاری مستقیم در کانال آرشیو (هاست ابری تلگرام)
+            archive_msg = await client.send_video(
+                chat_id=ARCHIVE_CHANNEL,
                 video=output_path,
                 thumb=photo_path,
-                caption="✅ ویدیو با موفقیت آماده شد.",
-                progress=prog_func
+                caption=f"📁 آرشیو ویدیو کاربر: `{user_id}`"
+            )
+
+            # 2. فوروارد یا کپی سریع از کانال برای کاربر (بدون فشار به رم رندر)
+            await archive_msg.copy(
+                chat_id=user_id,
+                caption="✅ ویدیو با موفقیت آماده و ارسال شد."
             )
 
             await status_msg.delete()
@@ -399,5 +403,5 @@ async def media_handler(client: Client, message: Message):
     except Exception as e:
         print(f"Error in media_handler: {e}")
 
-print("Bot is fully running with persistent storage and thumbnail-only cover mode...")
+print("Bot is fully running with Render + Telegram Cloud Channel Architecture...")
 app.run()
