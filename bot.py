@@ -11,7 +11,7 @@ class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"ZEUC TV Video Bot is running!")
+        self.wfile.write(b"ZEUC TV Cover Bot is running!")
 
 def run_server():
     port = int(os.environ.get("PORT", 10000))
@@ -33,105 +33,64 @@ app = Client(
     in_memory=True
 )
 
-# حافظه موقت برای مدیریت مراحل کاربران
+# حافظه موقت برای ذخیره اطلاعات ویدیو، کاور و وضعیت کاربران
 user_data = {}
 
-@app.on_message(filters.command("start"))
-async def start_handler(client: Client, message: Message):
-    user_id = message.from_user.id
-    user_data[user_id] = {}
-    
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🎬 ادیت ویدیو", callback_data="menu_edit")],
-        [InlineKeyboardButton("🖼️ بخش کاور ویدیو", callback_data="menu_cover")],
-        [InlineKeyboardButton("ℹ️ درباره ربات", callback_data="menu_about")]
-    ])
-    await message.reply_text(
-        "سلام! 👋 به ربات پردازش و مدیریت ویدیو خوش آمدید.\n\n"
-        "لطفاً یکی از گزینه‌های زیر را انتخاب کنید:",
-        reply_markup=keyboard
-    )
-
-@app.on_callback_query()
-async def callback_handler(client: Client, callback_query: CallbackQuery):
-    data = callback_query.data
-    user_id = callback_query.from_user.id
-
-    if user_id not in user_data:
-        user_data[user_id] = {}
-
-    if data == "menu_edit":
-        user_data[user_id]["mode"] = "edit"
-        await callback_query.message.edit_text(
-            "🛠️ **بخش ادیت ویدیو**\n\nلطفاً ویدیوی خود را بفرستید:"
-        )
-    elif data == "menu_cover":
-        user_data[user_id]["mode"] = "cover_video"
-        await callback_query.message.edit_text(
-            "🖼️ **بخش کاور ویدیو**\n\nمرحله اول: لطفاً **ویدیو**ی خود را ارسال کنید:"
-        )
-    elif data == "menu_about":
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔙 بازگشت به منو", callback_data="back_to_main")]
-        ])
-        await callback_query.message.edit_text(
-            "ℹ️ این ربات مجهز به سیستم پردازش FFmpeg و نمایش درصد پیشرفت است.",
-            reply_markup=keyboard
-        )
-    elif data == "back_to_main":
-        user_data[user_id] = {}
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🎬 ادیت ویدیو", callback_data="menu_edit")],
-            [InlineKeyboardButton("🖼️ بخش کاور ویدیو", callback_data="menu_cover")],
-            [InlineKeyboardButton("ℹ️ درباره ربات", callback_data="menu_about")]
-        ])
-        await callback_query.message.edit_text(
-            "به منوی اصلی برگشتیم. لطفاً یک گزینه انتخاب کنید:",
-            reply_markup=keyboard
-        )
-
-# نمایش درصد پیشرفت
+# تابع نمایش درصد پیشرفت زنده
 def progress(current, total, message, text):
+    if total == 0:
+        return
     now = time.time()
-    if hasattr(progress, "last_time") and now - progress.last_time < 2:
+    if hasattr(progress, "last_time") and now - progress.last_time < 1.5:
         return
     progress.last_time = now
 
     percentage = current * 100 / total
-    speed = current / (now - getattr(progress, "start_time", now)) if now != getattr(progress, "start_time", now) else 0
+    elapsed = now - getattr(progress, "start_time", now)
+    speed = current / elapsed if elapsed > 0 else 0
     
     current_mb = current / (1024 * 1024)
     total_mb = total / (1024 * 1024)
     speed_mb = speed / (1024 * 1024)
 
-    progress_bar = "█" * int(percentage // 10) + "░" * (10 - int(percentage // 10))
+    filled = int(percentage // 10)
+    progress_bar = "█" * filled + "░" * (10 - filled)
+    
+    txt = (
+        f"{text}\n\n"
+        f"[{progress_bar}] {percentage:.1f}%\n\n"
+        f"📊 حجم: {current_mb:.1f} MB از {total_mb:.1f} MB\n"
+        f"⚡ سرعت: {speed_mb:.1f} MB/s"
+    )
     
     try:
-        message.edit_text(
-            f"{text}\n\n"
-            f"[{progress_bar}] {percentage:.1f}%\n\n"
-            f"📊 حجم: {current_mb:.1f} MB از {total_mb:.1f} MB\n"
-            f"⚡ سرعت: {speed_mb:.1f} MB/s"
-        )
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            loop.create_task(message.edit_text(txt))
     except Exception:
         pass
 
-# مدیریت دریافت ویدیو و عکس
+@app.on_message(filters.command("start"))
+async def start_handler(client: Client, message: Message):
+    user_id = message.from_user.id
+    user_data[user_id] = {"mode": "waiting_for_video"}
+    
+    await message.reply_text(
+        "سلام! 👋 به ربات پردازش ویدیو و کاور خوش آمدید.\n\n"
+        "مرحله اول: لطفاً **ویدیو**ی خود را ارسال کنید:"
+    )
+
 @app.on_message(filters.video | filters.document | filters.photo)
 async def media_handler(client: Client, message: Message):
     user_id = message.from_user.id
     if user_id not in user_data:
-        user_data[user_id] = {}
+        user_data[user_id] = {"mode": "waiting_for_video"}
     
-    mode = user_data[user_id].get("mode")
+    state = user_data[user_id].get("mode")
 
-    if not mode:
-        await message.reply_text("⚠️ لطفاً ابتدا با دستور /start منوی اصلی را باز کنید.")
-        return
-
-    # حالت اول: دریافت ویدیو برای گذاشتن کاور
-    if mode == "cover_video" and (message.video or message.document):
-        status_msg = await message.reply_text("📥 در حال دانلود ویدیو...")
+    # ۱. دریافت ویدیو
+    if state == "waiting_for_video" and (message.video or message.document):
+        status_msg = await message.reply_text("📥 در حال آماده‌سازی برای دانلود ویدیو...")
         progress.start_time = time.time()
         
         video_path = await client.download_media(
@@ -141,84 +100,101 @@ async def media_handler(client: Client, message: Message):
         )
         
         user_data[user_id]["video_path"] = video_path
-        user_data[user_id]["mode"] = "cover_photo"
+        user_data[user_id]["mode"] = "waiting_for_photo"
         
-        await status_msg.edit_text("✅ ویدیو با موفقیت دریافت شد!\n\n🖼️ حالا مرحله دوم: لطفاً **عکس کاور** مورد نظرتان را بفرستید.")
+        await status_msg.edit_text("✅ ویدیو دریافت شد!\n\n🖼️ مرحله دوم: لطفاً **عکس کاور** مورد نظرتان را بفرستید.")
         return
 
-    # حالت دوم: دریافت عکس کاور بعد از ویدیو
-    elif mode == "cover_photo" and message.photo:
+    # ۲. دریافت عکس کاور
+    elif state == "waiting_for_photo" and message.photo:
         status_msg = await message.reply_text("📥 در حال دریافت عکس کاور...")
         photo_path = await client.download_media(message)
         
-        video_path = user_data[user_id].get("video_path")
-        output_path = f"output_{message.id}.mp4"
+        user_data[user_id]["photo_path"] = photo_path
+        user_data[user_id]["mode"] = "waiting_for_quality"
         
-        await status_msg.edit_text("⚙️ در حال الصاق کاور روی ویدیو با FFmpeg...")
+        # نمایش منوی انتخاب کیفیت
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("360p", callback_data="quality_360"), InlineKeyboardButton("480p", callback_data="quality_480")],
+            [InlineKeyboardButton("720p", callback_data="quality_720"), InlineKeyboardButton("1080p", callback_data="quality_1080")],
+            [InlineKeyboardButton("⚙️ کیفیت اصلی (بدون تغییر اندازه)", callback_data="quality_original")]
+        ])
         
-        # دستور FFmpeg برای چسباندن کاور روی ویدیو
+        await status_msg.edit_text(
+            "✅ کاور دریافت شد!\n\n"
+            "🎚️ مرحله سوم: لطفاً کیفیت خروجی ویدیو را انتخاب کنید:",
+            reply_markup=keyboard
+        )
+        return
+
+    else:
+        await message.reply_text("⚠️ لطفاً طبق مراحل پیش بروید. برای شروع /start را بزنید.")
+
+# ۳. مدیریت دکمه‌های انتخاب کیفیت و پردازش نهایی با FFmpeg
+@app.on_callback_query()
+async def quality_callback(client: Client, callback_query: CallbackQuery):
+    data = callback_query.data
+    user_id = callback_query.from_user.id
+
+    if user_id not in user_data or user_data[user_id].get("mode") != "waiting_for_quality":
+        await callback_query.answer("⚠️ لطفاً ابتدا ویدیو و کاور را ارسال کنید.", show_alert=True)
+        return
+
+    await callback_query.answer()
+    status_msg = callback_query.message
+    
+    video_path = user_data[user_id].get("video_path")
+    photo_path = user_data[user_id].get("photo_path")
+    output_path = f"output_{user_id}.mp4"
+
+    # تعیین فیلتر مقیاس (Scale) بر اساس کیفیت انتخابی
+    scale_filter = ""
+    if data == "quality_360":
+        scale_filter = "scale=-2:360"
+    elif data == "quality_480":
+        scale_filter = "scale=-2:480"
+    elif data == "quality_720":
+        scale_filter = "scale=-2:720"
+    elif data == "quality_1080":
+        scale_filter = "scale=-2:1080"
+    else:
+        scale_filter = "copy" # کیفیت اصلی
+
+    await status_msg.edit_text("⚙️ در حال الصاق کاور و تغییر کیفیت با FFmpeg...")
+
+    # دستور FFmpeg برای چسباندن کاور و تغییر رزولوشن ویدیو
+    if scale_filter == "copy":
         cmd = f"ffmpeg -i '{video_path}' -i '{photo_path}' -map 0 -map 1 -c copy -disposition:v:1 attached_pic '{output_path}' -y"
-        
-        process = await asyncio.create_subprocess_shell(
-            cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        await process.communicate()
-        
-        await status_msg.edit_text("📤 در حال آپلود ویدیوی نهایی با کاور جدید...")
-        progress.start_time = time.time()
-        
-        await message.reply_video(
-            video=output_path,
-            thumb=photo_path,
-            caption="✅ کاور با موفقیت روی ویدیو قرار گرفت و پردازش شد.",
-            progress=progress,
-            progress_args=(status_msg, "📤 **در حال آپلود ویدیوی نهایی:**")
-        )
-        
-        await status_msg.delete()
-        
-        # پاکسازی فایل‌ها
-        for p in [video_path, photo_path, output_path]:
-            if p and os.path.exists(p):
-                os.remove(p)
-        user_data[user_id] = {}
-        return
+    else:
+        cmd = f"ffmpeg -i '{video_path}' -i '{photo_path}' -filter:v:0 '{scale_filter}' -map 0:v -map 0:a? -map 1:v -c:v:0 libx264 -c:a copy -c:v:1 copy -disposition:v:1 attached_pic '{output_path}' -y"
 
-    # حالت سوم: ادیت معمولی ویدیو
-    elif mode == "edit" and (message.video or message.document):
-        status_msg = await message.reply_text("📥 در حال دانلود ویدیو...")
-        progress.start_time = time.time()
-        
-        video_path = await client.download_media(
-            message,
-            progress=progress,
-            progress_args=(status_msg, "📥 **در حال دانلود ویدیو:**")
-        )
-        
-        await status_msg.edit_text("⚙️ در حال پردازش ویدیو...")
-        output_path = f"output_{message.id}.mp4"
-        
-        cmd = f"ffmpeg -i '{video_path}' -c copy '{output_path}' -y"
-        process = await asyncio.create_subprocess_shell(cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-        await process.communicate()
-        
-        await status_msg.edit_text("📤 در حال آپلود...")
-        progress.start_time = time.time()
-        
-        await message.reply_video(
-            video=output_path,
-            caption="✅ ادیت ویدیو با موفقیت انجام شد.",
-            progress=progress,
-            progress_args=(status_msg, "📤 **در حال آپلود ویدیوی نهایی:**")
-        )
-        
-        await status_msg.delete()
-        if os.path.exists(video_path): os.remove(video_path)
-        if os.path.exists(output_path): os.remove(output_path)
-        user_data[user_id] = {}
-        return
+    process = await asyncio.create_subprocess_shell(
+        cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE
+    )
+    await process.communicate()
 
-print("Bot is running with Cover and Progress features...")
+    await status_msg.edit_text("📤 در حال آماده‌سازی برای آپلود ویدیوی نهایی...")
+    progress.start_time = time.time()
+
+    await client.send_video(
+        chat_id=user_id,
+        video=output_path,
+        thumb=photo_path,
+        caption="✅ ویدیو با موفقیت پردازش شد و کاور و کیفیت جدید روی آن اعمال گردید.",
+        progress=progress,
+        progress_args=(status_msg, "📤 **در حال آپلود ویدیوی نهایی:**")
+    )
+
+    await status_msg.delete()
+
+    # پاکسازی فایل‌ها از روی هاست رندر درجا
+    for p in [video_path, photo_path, output_path]:
+        if p and os.path.exists(p):
+            os.remove(p)
+
+    user_data[user_id] = {"mode": "waiting_for_video"}
+
+print("Bot is running with Cover, Quality selection, and Live Progress...")
 app.run()
