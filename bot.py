@@ -123,8 +123,11 @@ async def download_file_from_url(url, output_path, message):
     start_time = time.time()
     last_update_time = [0]
     
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url) as response:
+    # تنظیم تایم‌آهنگ پایدارتر برای جلوگیری از قطع شدن اتصال‌های کند
+    timeout = aiohttp.ClientTimeout(total=None, sock_connect=30, sock_read=60)
+    
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.get(url, allow_redirects=True) as response:
             if response.status != 200:
                 raise Exception("خطا در دسترسی به لینک (کد وضعیت: {})".format(response.status))
             
@@ -134,7 +137,7 @@ async def download_file_from_url(url, output_path, message):
 
             downloaded = 0
             with open(output_path, 'wb') as f:
-                async for chunk in response.content.iter_chunked(1024 * 1024):
+                async for chunk in response.content.iter_chunked(2048 * 1024):
                     if chunk:
                         f.write(chunk)
                         downloaded += len(chunk)
@@ -241,12 +244,9 @@ async def finalize_and_send(client, message, user_id, video_path, photo_path, su
 
     try:
         if subtitle_path and os.path.exists(subtitle_path):
-            # اگر زیرنویس وجود داشته باشد، آن را روی ویدیو هک (چسبانده) می‌کند
-            # توجه: مسیر زیرنویس در فیلتر vf برای کارکرد درست در FFmpeg ایزوله می‌شود
             sub_escaped = subtitle_path.replace("'", "\\'").replace(":", "\\:")
             cmd = f"ffmpeg -i '{video_path}' -vf \"subtitles='{sub_escaped}'\" -c:v libx264 -preset ultrafast -crf 23 -c:a copy -movflags +faststart '{output_path}' -y"
         else:
-            # بدون زیرنویس (کپی سریع جریان ویدیو و صوت)
             cmd = f"ffmpeg -i '{video_path}' -map 0:v -map 0:a -c copy -movflags +faststart '{output_path}' -y"
 
         process = await asyncio.create_subprocess_shell(cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
@@ -323,7 +323,6 @@ async def media_handler(client: Client, message: Message):
             await message.reply_text("ℹ️ این ربات برای قرار دادن کاور، چسباندن زیرنویس و تبدیل لینک مستقیم طراحی شده است.")
             return
 
-        # دکمه رد کردن زیرنویس
         elif text == "⏭️ مرحله بعد (بدون زیرنویس)":
             if state == "waiting_for_subtitle":
                 v_path = user_data[user_id].get("video_path")
@@ -336,7 +335,6 @@ async def media_handler(client: Client, message: Message):
                 await finalize_and_send(client, message, user_id, v_path, p_path, None)
                 return
 
-        # دریافت عکس کاور برای حالت فایل
         if state == "waiting_for_photo" and message.photo:
             status_msg = await message.reply_text("📥 در حال دریافت عکس کاور...")
             photo_path = await client.download_media(message)
@@ -345,7 +343,6 @@ async def media_handler(client: Client, message: Message):
             await status_msg.edit_text("✅ کاور دریافت شد!\n\n🎬 **مرحله دوم:** حالا فایل **ویدیو** را بفرستید:")
             return
 
-        # دریافت عکس کاور برای حالت لینک
         elif state == "waiting_for_link_photo" and message.photo:
             status_msg = await message.reply_text("📥 در حال دریافت عکس کاور...")
             photo_path = await client.download_media(message)
@@ -354,7 +351,6 @@ async def media_handler(client: Client, message: Message):
             await status_msg.edit_text("✅ کاور دریافت شد!\n\n🔗 **مرحله دوم:** حالا **لینک مستقیم دانلود ویدیو** را ارسال کنید:")
             return
 
-        # دریافت لینک مستقیم
         elif state == "waiting_for_link_url" and text and text.startswith("http"):
             if not await check_forced_sub(client, message):
                 return
@@ -368,7 +364,7 @@ async def media_handler(client: Client, message: Message):
                 if str(e) == "LIMIT_EXCEEDED":
                     await status_msg.edit_text("❌ حجم فایل موجود در لینک بیشتر از حد مجاز (۵۱۲ مگابایت) است.")
                 else:
-                    await status_msg.edit_text(f"❌ خطا در دانلود فایل از لینک:\n`{str(e)}`")
+                    await status_msg.edit_text(f"❌ خطا در دانلود فایل از لینک (قطع ارتباط یا منقضی شدن لینک):\n`{str(e)}`")
                 if os.path.exists(video_path):
                     os.remove(video_path)
                 user_data[user_id] = {"mode": "main_menu"}
@@ -392,12 +388,11 @@ async def media_handler(client: Client, message: Message):
             
             await status_msg.edit_text(
                 "✅ ویدیو از لینک دانلود شد!\n\n"
-                "📝 **مرحله سوم (اختیاری):** لطفاً **فایل زیرنویس** (`.srt`) خود را بفرستید یا روی دکمه زیر کلیک کنید تا بدون زیرنویس پردازش شود:",
+                "📝 **مرحله سوم (اختیاری):** لطفاً **فایل زیرنویس** (`.srt`) خود را بفرستید یا روی دکمه زیر کلیک کنید:",
                 reply_markup=get_subtitle_keyboard()
             )
             return
 
-        # دریافت فایل ویدیو مستقیم
         elif state == "waiting_for_video" and (message.video or message.document):
             if not await check_forced_sub(client, message):
                 return
@@ -429,7 +424,6 @@ async def media_handler(client: Client, message: Message):
             )
             return
 
-        # دریافت فایل زیرنویس (چه برای حالت فایل و چه برای حالت لینک)
         elif state in ["waiting_for_subtitle", "waiting_for_link_subtitle"] and (message.document or (text and text.endswith(('.srt', '.vtt')))):
             status_msg = await message.reply_text("📥 در حال دریافت فایل زیرنویس...")
             sub_path = await client.download_media(message)
@@ -446,5 +440,5 @@ async def media_handler(client: Client, message: Message):
     except Exception as e:
         print(f"Error in media_handler: {e}")
 
-print("Bot is running with Subtitle embedding support and strict 512MB protection...")
+print("Bot is running with optimized stable downloader...")
 app.run()
