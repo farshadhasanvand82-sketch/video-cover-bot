@@ -122,8 +122,6 @@ def create_progress_callback(message, text):
 async def download_file_from_url(url, output_path, message):
     start_time = time.time()
     last_update_time = [0]
-    
-    # تنظیم تایم‌آهنگ پایدارتر برای جلوگیری از قطع شدن اتصال‌های کند
     timeout = aiohttp.ClientTimeout(total=None, sock_connect=30, sock_read=60)
     
     async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -243,11 +241,15 @@ async def finalize_and_send(client, message, user_id, video_path, photo_path, su
     status_msg = await message.reply_text("⚙️ در حال پردازش ویدیو و اعمال تنظیمات...")
 
     try:
+        v_str = str(video_path) if video_path else ""
+        p_str = str(photo_path) if photo_path else ""
+        
         if subtitle_path and os.path.exists(subtitle_path):
-            sub_escaped = subtitle_path.replace("'", "\\'").replace(":", "\\:")
-            cmd = f"ffmpeg -i '{video_path}' -vf \"subtitles='{sub_escaped}'\" -c:v libx264 -preset ultrafast -crf 23 -c:a copy -movflags +faststart '{output_path}' -y"
+            sub_str = str(subtitle_path)
+            sub_escaped = sub_str.replace("'", "\\'").replace(":", "\\:")
+            cmd = f"ffmpeg -i '{v_str}' -vf \"subtitles='{sub_escaped}'\" -c:v libx264 -preset ultrafast -crf 23 -c:a copy -movflags +faststart '{output_path}' -y"
         else:
-            cmd = f"ffmpeg -i '{video_path}' -map 0:v -map 0:a -c copy -movflags +faststart '{output_path}' -y"
+            cmd = f"ffmpeg -i '{v_str}' -map 0:v -map 0:a -c copy -movflags +faststart '{output_path}' -y"
 
         process = await asyncio.create_subprocess_shell(cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         await process.communicate()
@@ -258,7 +260,7 @@ async def finalize_and_send(client, message, user_id, video_path, photo_path, su
         await client.send_video(
             chat_id=user_id,
             video=output_path,
-            thumb=photo_path,
+            thumb=p_str if p_str else None,
             caption="✅ ویدیو با موفقیت آماده و ارسال شد.",
             progress=upload_prog
         )
@@ -268,9 +270,9 @@ async def finalize_and_send(client, message, user_id, video_path, photo_path, su
         await status_msg.edit_text(f"❌ خطا در پردازش نهایی: `{str(e)}`")
     finally:
         for p in [video_path, photo_path, subtitle_path, output_path]:
-            if p and os.path.exists(p):
+            if p and os.path.exists(str(p)):
                 try:
-                    os.remove(p)
+                    os.remove(str(p))
                 except:
                     pass
         user_data[user_id] = {"mode": "main_menu"}
@@ -324,12 +326,7 @@ async def media_handler(client: Client, message: Message):
             return
 
         elif text == "⏭️ مرحله بعد (بدون زیرنویس)":
-            if state == "waiting_for_subtitle":
-                v_path = user_data[user_id].get("video_path")
-                p_path = user_data[user_id].get("photo_path")
-                await finalize_and_send(client, message, user_id, v_path, p_path, None)
-                return
-            elif state == "waiting_for_link_subtitle":
+            if state in ["waiting_for_subtitle", "waiting_for_link_subtitle"]:
                 v_path = user_data[user_id].get("video_path")
                 p_path = user_data[user_id].get("photo_path")
                 await finalize_and_send(client, message, user_id, v_path, p_path, None)
@@ -337,7 +334,7 @@ async def media_handler(client: Client, message: Message):
 
         if state == "waiting_for_photo" and message.photo:
             status_msg = await message.reply_text("📥 در حال دریافت عکس کاور...")
-            photo_path = await client.download_media(message)
+            photo_path = str(await client.download_media(message))
             user_data[user_id]["photo_path"] = photo_path
             user_data[user_id]["mode"] = "waiting_for_video"
             await status_msg.edit_text("✅ کاور دریافت شد!\n\n🎬 **مرحله دوم:** حالا فایل **ویدیو** را بفرستید:")
@@ -345,7 +342,7 @@ async def media_handler(client: Client, message: Message):
 
         elif state == "waiting_for_link_photo" and message.photo:
             status_msg = await message.reply_text("📥 در حال دریافت عکس کاور...")
-            photo_path = await client.download_media(message)
+            photo_path = str(await client.download_media(message))
             user_data[user_id]["photo_path"] = photo_path
             user_data[user_id]["mode"] = "waiting_for_link_url"
             await status_msg.edit_text("✅ کاور دریافت شد!\n\n🔗 **مرحله دوم:** حالا **لینک مستقیم دانلود ویدیو** را ارسال کنید:")
@@ -364,7 +361,7 @@ async def media_handler(client: Client, message: Message):
                 if str(e) == "LIMIT_EXCEEDED":
                     await status_msg.edit_text("❌ حجم فایل موجود در لینک بیشتر از حد مجاز (۵۱۲ مگابایت) است.")
                 else:
-                    await status_msg.edit_text(f"❌ خطا در دانلود فایل از لینک (قطع ارتباط یا منقضی شدن لینک):\n`{str(e)}`")
+                    await status_msg.edit_text(f"❌ خطا در دانلود فایل از لینک:\n`{str(e)}`")
                 if os.path.exists(video_path):
                     os.remove(video_path)
                 user_data[user_id] = {"mode": "main_menu"}
@@ -413,7 +410,7 @@ async def media_handler(client: Client, message: Message):
             status_msg = await message.reply_text("📥 در حال دانلود ویدیو...")
             prog_func = create_progress_callback(status_msg, "📥 **در حال دانلود ویدیو:**")
             
-            video_path = await client.download_media(message, progress=prog_func)
+            video_path = str(await client.download_media(message, progress=prog_func))
             user_data[user_id]["video_path"] = video_path
             user_data[user_id]["mode"] = "waiting_for_subtitle"
             
@@ -426,7 +423,7 @@ async def media_handler(client: Client, message: Message):
 
         elif state in ["waiting_for_subtitle", "waiting_for_link_subtitle"] and (message.document or (text and text.endswith(('.srt', '.vtt')))):
             status_msg = await message.reply_text("📥 در حال دریافت فایل زیرنویس...")
-            sub_path = await client.download_media(message)
+            sub_path = str(await client.download_media(message))
             
             v_path = user_data[user_id].get("video_path")
             p_path = user_data[user_id].get("photo_path")
@@ -440,5 +437,5 @@ async def media_handler(client: Client, message: Message):
     except Exception as e:
         print(f"Error in media_handler: {e}")
 
-print("Bot is running with optimized stable downloader...")
+print("Bot is running with string-converted paths for FFmpeg/Subtitles...")
 app.run()
