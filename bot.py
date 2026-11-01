@@ -28,12 +28,15 @@ API_ID = 2040
 API_HASH = "b18441a1ff607e10a989891a5462e627"
 BOT_TOKEN = "9238834032:AAFl0JBdvFrDR2AFeoHH7TIFvOGw2jNCxM0"
 
+# افزایش محدودیت‌های زمانی (Timeout) برای جلوگیری از قطع شدن دانلود فایل‌های سنگین
 app = Client(
     "video_cover_bot",
     api_id=API_ID,
     api_hash=API_HASH,
     bot_token=BOT_TOKEN,
-    in_memory=True
+    in_memory=True,
+    workers=4,
+    sleep_threshold=180
 )
 
 ADMINS = {8886868325, 8250289921}
@@ -122,7 +125,7 @@ def create_progress_callback(message, text):
 async def download_file_from_url(url, output_path, message):
     start_time = time.time()
     last_update_time = [0]
-    timeout = aiohttp.ClientTimeout(total=None, sock_connect=30, sock_read=60)
+    timeout = aiohttp.ClientTimeout(total=None, sock_connect=60, sock_read=120)
     
     async with aiohttp.ClientSession(timeout=timeout) as session:
         async with session.get(url, allow_redirects=True) as response:
@@ -244,7 +247,11 @@ async def finalize_and_send(client, message, user_id, video_path, photo_path, su
         v_str = str(video_path) if video_path else ""
         p_str = str(photo_path) if photo_path else ""
         
-        if subtitle_path and os.path.exists(subtitle_path):
+        if not v_str or not os.path.exists(v_str):
+            await status_msg.edit_text("❌ فایل ویدیو یافت نشد یا فرآیند دانلود ناقص مانده است.")
+            return
+
+        if subtitle_path and os.path.exists(str(subtitle_path)):
             sub_str = str(subtitle_path)
             sub_escaped = sub_str.replace("'", "\\'").replace(":", "\\:")
             cmd = f"ffmpeg -i '{v_str}' -vf \"subtitles='{sub_escaped}'\" -c:v libx264 -preset ultrafast -crf 23 -c:a copy -movflags +faststart '{output_path}' -y"
@@ -252,7 +259,11 @@ async def finalize_and_send(client, message, user_id, video_path, photo_path, su
             cmd = f"ffmpeg -i '{v_str}' -map 0:v -map 0:a -c copy -movflags +faststart '{output_path}' -y"
 
         process = await asyncio.create_subprocess_shell(cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-        await process.communicate()
+        stdout, stderr = await process.communicate()
+
+        if not os.path.exists(output_path):
+            await status_msg.edit_text("❌ خطا در اجرای پردازش FFmpeg.")
+            return
 
         await status_msg.edit_text("📤 در حال ارسال ویدیوی نهایی...")
         upload_prog = create_progress_callback(status_msg, "📤 **در حال ارسال ویدیوی نهایی:**")
@@ -437,5 +448,5 @@ async def media_handler(client: Client, message: Message):
     except Exception as e:
         print(f"Error in media_handler: {e}")
 
-print("Bot is running with string-converted paths for FFmpeg/Subtitles...")
+print("Bot is running with extended timeout configuration...")
 app.run()
